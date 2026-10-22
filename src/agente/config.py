@@ -1,6 +1,6 @@
+import os
 from decimal import Decimal
 from functools import lru_cache
-import os
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -20,13 +20,9 @@ class Settings:
         def obtener(nombre: str, predeterminado: str) -> str:
             return os.environ.get(nombre, valores_env.get(nombre, predeterminado))
 
-        self.database_url = obtener(
-            "DATABASE_URL", "postgresql+psycopg://agente:agente@localhost:5432/agente"
-        )
+        self.database_url = obtener("DATABASE_URL", "postgresql+psycopg://agente:agente@localhost:5432/agente")
         self.umbral_confianza = Decimal(obtener("UMBRAL_CONFIANZA", "0.80"))
-        self.directorio_puc = Path(
-            obtener("DIRECTORIO_PUC", str(RAIZ / "data" / "puc"))
-        )
+        self.directorio_puc = Path(obtener("DIRECTORIO_PUC", str(RAIZ / "data" / "puc")))
 
 
 @lru_cache

@@ -67,9 +67,7 @@ class CatalogoPUC:
     @classmethod
     def desde_csv(cls, directorio: Path) -> "CatalogoPUC":
         with (directorio / "cuentas_ventas.csv").open(encoding="utf-8", newline="") as f:
-            cuentas = [
-                CuentaPUC(r["codigo"], r["nombre"], Naturaleza(r["naturaleza"])) for r in csv.DictReader(f)
-            ]
+            cuentas = [CuentaPUC(r["codigo"], r["nombre"], Naturaleza(r["naturaleza"])) for r in csv.DictReader(f)]
         with (directorio / "reglas_ingreso.csv").open(encoding="utf-8", newline="") as f:
             reglas = [
                 ReglaIngreso(

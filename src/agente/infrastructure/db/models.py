@@ -49,18 +49,14 @@ class TransaccionModel(Base):
     motivos_alerta: Mapped[list[str]] = mapped_column(JSON, default=list)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    partidas: Mapped[list["PartidaModel"]] = relationship(
-        back_populates="transaccion", cascade="all, delete-orphan"
-    )
+    partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
 
 
 class PartidaModel(Base):
     __tablename__ = "partida"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    transaccion_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("transaccion.id", ondelete="CASCADE"), index=True
-    )
+    transaccion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("transaccion.id", ondelete="CASCADE"), index=True)
     cuenta_codigo: Mapped[str] = mapped_column(ForeignKey("cuenta_puc.codigo"))
     naturaleza: Mapped[str] = mapped_column(String(10))
     valor: Mapped[Decimal] = mapped_column(Numeric(18, 2))
