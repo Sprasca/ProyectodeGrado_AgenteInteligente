@@ -1,4 +1,4 @@
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 
 from agente.config import get_settings
 from agente.domain.puc import CatalogoPUC
