@@ -1,0 +1,6 @@
+codigo_regla,cuenta_ingreso,palabras_clave,descripcion
+R-4135-COMERCIO,4135,venta|mercancia|producto|articulo|repuesto|licor|abarrote,Venta de mercancías (comercio al por mayor y menor)
+R-4140-RESTAURANTE,4140,restaurante|almuerzo|comida|bebida|hospedaje|habitacion,Hoteles y restaurantes
+R-4145-TRANSPORTE,4145,transporte|flete|envio|mensajeria|almacenamiento,"Transporte, almacenamiento y comunicaciones"
+R-4155-ALQUILER,4155,alquiler|arriendo|asesoria empresarial|consultoria,Actividades empresariales y de alquiler
+R-4170-SERVICIOS,4170,peluqueria|lavanderia|mantenimiento|reparacion,Otros servicios personales

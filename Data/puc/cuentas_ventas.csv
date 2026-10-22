@@ -1,0 +1,11 @@
+codigo,nombre,naturaleza
+1105,Caja,DEBITO
+1110,Bancos,DEBITO
+1305,Clientes,DEBITO
+2408,Impuesto sobre las ventas por pagar,CREDITO
+4135,Comercio al por mayor y al por menor,CREDITO
+4140,Hoteles y restaurantes,CREDITO
+4145,"Transporte, almacenamiento y comunicaciones",CREDITO
+4155,Actividades inmobiliarias empresariales y de alquiler,CREDITO
+4170,Otras actividades de servicios comunitarios sociales y personales,CREDITO
+4175,"Devoluciones, rebajas y descuentos en ventas",DEBITO
