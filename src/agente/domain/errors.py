@@ -8,3 +8,6 @@ class AsientoInvalidoError(ErrorDeDominio):
 
 class CuentaNoExisteError(ErrorDeDominio):
     """La cuenta no existe en el catálogo del PUC cargado."""
+
+class NoEsVentaError(ErrorDeDominio):
+    """El documento no es una venta; el agente no lo procesa (RN01)."""
