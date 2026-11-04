@@ -10,6 +10,7 @@ dependencies = [
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
+    # "lxml>=5.0",   # opcional; el parser actual usa xml.etree de la stdlib
 ]
 
 [dependency-groups]
