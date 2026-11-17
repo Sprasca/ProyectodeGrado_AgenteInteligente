@@ -1,4 +1,4 @@
-"""API del agente. Ejecutar: uv run uvicorn agente.api.main:app --reload"""
+"""API del agente."""
 
 from pathlib import Path
 
