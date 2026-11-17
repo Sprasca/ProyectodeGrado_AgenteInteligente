@@ -3,7 +3,7 @@ from decimal import Decimal
 from .asiento import AsientoContable, Partida
 from .enums import CondicionPago, EstadoTransaccion, Naturaleza
 from .errors import AsientoInvalidoError, CuentaNoExisteError
-from .factura import CODIGO_IVA, Factura, MEDIO_PAGO_EFECTIVO
+from .factura import CODIGO_IVA, MEDIO_PAGO_EFECTIVO, Factura
 from .puc import CatalogoPUC, ReglaIngreso, normalizar
 from .resultado import ResultadoClasificacion
 
@@ -148,9 +148,7 @@ def clasificar(
         )
 
     if confianza < umbral_confianza:
-        motivos.append(
-            f"Confianza {confianza} por debajo del umbral {umbral_confianza}."
-        )
+        motivos.append(f"Confianza {confianza} por debajo del umbral {umbral_confianza}.")
 
     estado = (
         EstadoTransaccion.APROBADA_AUTOMATICA
