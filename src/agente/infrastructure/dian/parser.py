@@ -52,12 +52,8 @@ def _fecha(nodo: ET.Element | None, ruta: str) -> date:
 def _tercero(nodo: ET.Element | None) -> Tercero:
     if nodo is None:
         return Tercero(nit="", nombre="")
-    nit = _texto(nodo, "cac:PartyTaxScheme/cbc:CompanyID") or _texto(
-        nodo, "cac:PartyIdentification/cbc:ID"
-    )
-    nombre = _texto(nodo, "cac:PartyTaxScheme/cbc:RegistrationName") or _texto(
-        nodo, "cac:PartyName/cbc:Name"
-    )
+    nit = _texto(nodo, "cac:PartyTaxScheme/cbc:CompanyID") or _texto(nodo, "cac:PartyIdentification/cbc:ID")
+    nombre = _texto(nodo, "cac:PartyTaxScheme/cbc:RegistrationName") or _texto(nodo, "cac:PartyName/cbc:Name")
     return Tercero(nit=nit, nombre=nombre)
 
 
@@ -126,9 +122,7 @@ def parsear_xml(contenido: str | bytes) -> Factura:
     lineas: list[LineaFactura] = []
     for idx, linea_nodo in enumerate(inv.findall("cac:InvoiceLine", NS), start=1):
         lid = _texto(linea_nodo, "cbc:ID") or str(idx)
-        desc = _texto(linea_nodo, "cac:Item/cbc:Description") or _texto(
-            linea_nodo, "cac:Item/cbc:Name"
-        )
+        desc = _texto(linea_nodo, "cac:Item/cbc:Description") or _texto(linea_nodo, "cac:Item/cbc:Name")
         cantidad = _decimal(linea_nodo, "cbc:InvoicedQuantity", "1")
         valor = _decimal(linea_nodo, "cbc:LineExtensionAmount")
         lineas.append(

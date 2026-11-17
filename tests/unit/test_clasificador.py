@@ -1,7 +1,5 @@
 from decimal import Decimal
 
-import pytest
-
 from agente.domain.clasificador import clasificar
 from agente.domain.enums import CondicionPago, EstadoTransaccion, Naturaleza
 from agente.domain.factura import Factura, Impuesto, LineaFactura, Tercero
@@ -21,9 +19,7 @@ def _factura_basica(
         adquirente=Tercero("800987654", "Cliente"),
         condicion_pago=condicion,
         medio_pago=medio,
-        lineas=(
-            LineaFactura("1", descripcion, Decimal("2"), Decimal("100000")),
-        ),
+        lineas=(LineaFactura("1", descripcion, Decimal("2"), Decimal("100000")),),
         impuestos=(Impuesto("01", Decimal("19000"), Decimal("19")),),
         subtotal_lineas=Decimal("100000"),
         descuento_global=Decimal("0"),
