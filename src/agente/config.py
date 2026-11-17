@@ -23,6 +23,9 @@ class Settings:
         self.database_url = obtener("DATABASE_URL", "postgresql+psycopg://agente:agente@localhost:5432/agente")
         self.umbral_confianza = Decimal(obtener("UMBRAL_CONFIANZA", "0.80"))
         self.directorio_puc = Path(obtener("DIRECTORIO_PUC", str(RAIZ / "data" / "puc")))
+        self.groq_api_key = obtener("GROQ_API_KEY", "")
+        self.groq_modelo = obtener("GROQ_MODELO", "llama-3.3-70b-versatile")
+        self.directorio_facturas = Path(obtener("DIRECTORIO_FACTURAS", str(RAIZ / "facturas")))
 
 
 @lru_cache

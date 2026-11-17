@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agente PUC - Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: .6rem 0 .2rem; font-weight: 600; }
+    input { padding: .4rem; width: 100%; box-sizing: border-box; }
+    button { margin: .8rem .5rem 0 0; padding: .5rem 1rem; cursor: pointer; }
+    pre { background: #f4f4f4; padding: 1rem; overflow: auto; border-radius: 6px; }
+    small { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Agente inteligente PUC</h1>
+  <p id="estado">Cargando motor Python en el navegador...</p>
+
+  <label>Factura electrónica (.xml o .pdf si usa la API)</label>
+  <input type="file" id="archivo" accept=".xml,.pdf">
+
+  <label>Umbral de confianza</label>
+  <input id="umbral" value="0.80">
+
+  <label>URL de la API (opcional, para usar Groq y PDF)</label>
+  <input id="api" placeholder="https://su-api.ejemplo.com">
+  <small>Sin URL se ejecuta solo el motor de reglas, localmente en el navegador.</small>
+
+  <div>
+    <button id="ejecutar" disabled>Clasificar</button>
+    <button id="ejemplo" disabled>Usar factura de ejemplo</button>
+  </div>
+  <pre id="salida">Resultado...</pre>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+  <script>
+    let py;
+    const $ = (id) => document.getElementById(id);
+
+    async function iniciar() {
+      py = await loadPyodide();
+      const zip = await (await fetch("agente_demo.zip")).arrayBuffer();
+      py.unpackArchive(zip, "zip");
+      await py.runPythonAsync(`
+import json
+from decimal import Decimal
+from pathlib import Path
+from dataclasses import asdict
+from agente.domain.clasificador import clasificar
+from agente.domain.puc import CatalogoPUC
+from agente.infrastructure.dian.parser import parsear_xml
+
+CATALOGO = CatalogoPUC.desde_csv(Path("data/puc"))
+
+def procesar(xml, umbral):
+    resultado = clasificar(parsear_xml(xml), CATALOGO, Decimal(umbral))
+    return json.dumps(asdict(resultado), default=str, ensure_ascii=False, indent=2)
+`);
+      $("estado").textContent = "Motor listo.";
+      $("ejecutar").disabled = false;
+      $("ejemplo").disabled = false;
+    }
+
+    async function clasificar(archivo) {
+      $("salida").textContent = "Procesando...";
+      try {
+        const api = $("api").value.trim().replace(/\/$/, "");
+        if (api) {
+          const datos = new FormData();
+          datos.append("archivo", archivo);
+          const r = await fetch(api + "/facturas/clasificar", { method: "POST", body: datos });
+          $("salida").textContent = JSON.stringify(await r.json(), null, 2);
+        } else {
+          if (!archivo.name.toLowerCase().endsWith(".xml")) throw new Error("Sin API solo se leen archivos .xml");
+          const xml = await archivo.text();
+          $("salida").textContent = py.globals.get("procesar")(xml, $("umbral").value);
+        }
+      } catch (e) {
+        $("salida").textContent = "Error: " + e.message;
+      }
+    }
+
+    $("ejecutar").onclick = () => {
+      const f = $("archivo").files[0];
+      f ? clasificar(f) : ($("salida").textContent = "Seleccione un archivo.");
+    };
+    $("ejemplo").onclick = async () => {
+      const texto = await (await fetch("ejemplo.xml")).text();
+      clasificar(new File([texto], "ejemplo.xml", { type: "text/xml" }));
+    };
+
+    iniciar();
+  </script>
+</body>
+</html>
