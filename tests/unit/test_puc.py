@@ -6,7 +6,9 @@ from agente.domain.puc import CatalogoPUC, CuentaPUC, ReglaIngreso, normalizar
 
 
 def test_catalogo_semilla_carga(catalogo):
-    assert catalogo.existe("4135") and catalogo.existe("2408")
+    assert catalogo.existe("4135")
+    assert catalogo.resolver("iva")  # p. ej. 241004 según CSV actual
+    assert catalogo.resolver("caja") == "1105" or catalogo.existe(catalogo.resolver("caja"))
     assert len(catalogo.reglas) >= 5
 
 
@@ -27,3 +29,9 @@ def test_codigo_no_numerico():
 
 def test_normalizar_quita_tildes():
     assert normalizar("  MERCANCÍA Envío ") == "mercancia envio"
+
+
+def test_resolver_roles_operativos(catalogo):
+    for rol in ("caja", "bancos", "clientes", "iva"):
+        codigo = catalogo.resolver(rol)
+        assert catalogo.existe(codigo)
