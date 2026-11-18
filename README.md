@@ -4,7 +4,7 @@ Proyecto de grado, Ingeniería de Sistemas, Universidad de Cartagena.
 
 El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la interpreta, propone el asiento contable bajo el PUC del Grupo 2 y deja en alerta lo que no clasifica con suficiente confianza.
 
-## Estado: Sprint 1.0 (reglas de clasificación + parser determinista + caso de uso)
+## Estado: Sprint 2 En Pruebas
 
 | Componente | Estado |
 |---|---|
