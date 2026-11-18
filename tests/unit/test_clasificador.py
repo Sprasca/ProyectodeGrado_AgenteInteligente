@@ -38,17 +38,20 @@ def test_clasifica_comercio_contado_efectivo(catalogo):
     assert resultado.asiento is not None
     assert resultado.asiento.total_debitos == Decimal("119000")
 
+    caja = catalogo.resolver("caja")
+    iva = catalogo.cuenta_iva()
     cuentas = {p.cuenta: p for p in resultado.asiento.partidas}
-    assert cuentas["1105"].naturaleza is Naturaleza.DEBITO
+    assert cuentas[caja].naturaleza is Naturaleza.DEBITO
     assert cuentas["4135"].naturaleza is Naturaleza.CREDITO
-    assert cuentas["2408"].naturaleza is Naturaleza.CREDITO
+    assert cuentas[iva].naturaleza is Naturaleza.CREDITO
 
 
 def test_clasifica_credito_usa_clientes(catalogo):
     f = _factura_basica(condicion=CondicionPago.CREDITO, medio=None)
     resultado = clasificar(f, catalogo)
     assert resultado.asiento is not None
-    assert any(p.cuenta == "1305" for p in resultado.asiento.partidas)
+    clientes = catalogo.resolver("clientes")
+    assert any(p.cuenta == clientes for p in resultado.asiento.partidas)
 
 
 def test_sin_regla_coincide_alerta(catalogo):
@@ -62,9 +65,6 @@ def test_sin_regla_coincide_alerta(catalogo):
 
 def test_tipo_no_venta_alerta(catalogo):
     f = _factura_basica()
-    # Forzamos un tipo que no es venta
-    object.__setattr__(f, "tipo_documento", "91")  # type: ignore[misc]
-    # Como es frozen, mejor recreamos
     f2 = Factura(
         numero=f.numero,
         fecha=f.fecha,

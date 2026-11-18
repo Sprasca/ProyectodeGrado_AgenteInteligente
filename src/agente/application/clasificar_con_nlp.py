@@ -18,6 +18,12 @@ def catalogo_por_defecto() -> CatalogoPUC:
     return CatalogoPUC.desde_csv(get_settings().directorio_puc)
 
 
+def recargar_catalogo() -> CatalogoPUC:
+    """Invalida la caché y vuelve a leer data/puc (tras actualización del contador)."""
+    catalogo_por_defecto.cache_clear()
+    return catalogo_por_defecto()
+
+
 def _tiene_regla(descripcion: str, catalogo: CatalogoPUC) -> bool:
     texto = normalizar(descripcion)
     return any(p in texto for r in catalogo.reglas for p in r.palabras_clave)

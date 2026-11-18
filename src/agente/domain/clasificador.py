@@ -17,27 +17,16 @@ def _encontrar_regla(descripcion: str, reglas: tuple[ReglaIngreso, ...]) -> Regl
     return None
 
 
-def _cuenta_debito(factura: Factura) -> str:
-    """Elige la cuenta de débito según condición y medio de pago (RN típica de ventas)."""
-    if factura.condicion_pago is CondicionPago.CREDITO:
-        return "1305"  # Clientes
-    if factura.medio_pago == MEDIO_PAGO_EFECTIVO:
-        return "1105"  # Caja
-    return "1110"  # Bancos (por defecto en contado)
-
-
 def clasificar(
     factura: Factura,
     catalogo: CatalogoPUC,
     umbral_confianza: Decimal = Decimal("0.80"),
 ) -> ResultadoClasificacion:
     """
-    Aplica las reglas de clasificación del catálogo y construye el asiento de partida doble.
+    Aplica las reglas del catálogo (data/puc) y construye el asiento de partida doble.
 
-    - Empareja cada línea con una regla de ingreso por palabras clave.
-    - Arma débito (caja/bancos/clientes) + créditos (ingresos + IVA).
-    - Calcula confianza simple (proporción de líneas emparejadas).
-    - Si no cuadra o faltan cuentas → EN_ALERTA.
+    Las cuentas de caja, bancos, clientes e IVA se resuelven desde el catálogo actual,
+    de modo que un cambio del contador en los CSV no exige tocar este módulo.
     """
     motivos: list[str] = []
     reglas_aplicadas: list[str] = []
@@ -64,7 +53,6 @@ def clasificar(
             motivos_alerta=tuple(motivos),
         )
 
-    # Agrupar valor de ingreso por cuenta
     ingresos_por_cuenta: dict[str, Decimal] = {}
     lineas_emparejadas = 0
 
@@ -93,20 +81,37 @@ def clasificar(
 
     confianza = (Decimal(lineas_emparejadas) / Decimal(len(factura.lineas))).quantize(Decimal("0.001"))
 
-    # IVA (código 01)
     valor_iva = Decimal("0")
     for imp in factura.impuestos:
         if imp.codigo == CODIGO_IVA:
             valor_iva += imp.valor
 
-    cuenta_debito = _cuenta_debito(factura)
-    total_a_pagar = factura.total_a_pagar
+    # Cuenta de ingreso dominante (la de mayor valor) orienta clientes bienes vs servicios
+    cuenta_ingreso_ref = max(ingresos_por_cuenta, key=ingresos_por_cuenta.get)  # type: ignore[arg-type]
+
+    try:
+        cuenta_debito = catalogo.cuenta_debito_venta(
+            a_credito=factura.condicion_pago is CondicionPago.CREDITO,
+            efectivo=factura.medio_pago == MEDIO_PAGO_EFECTIVO,
+            cuenta_ingreso=cuenta_ingreso_ref,
+        )
+        cuenta_iva = catalogo.cuenta_iva() if valor_iva > 0 else None
+    except CuentaNoExisteError as exc:
+        motivos.append(str(exc))
+        return ResultadoClasificacion(
+            factura=factura,
+            asiento=None,
+            estado=EstadoTransaccion.EN_ALERTA,
+            confianza=confianza,
+            reglas_aplicadas=tuple(reglas_aplicadas),
+            motivos_alerta=tuple(motivos),
+        )
 
     partidas: list[Partida] = [
         Partida(
             cuenta=cuenta_debito,
             naturaleza=Naturaleza.DEBITO,
-            valor=total_a_pagar,
+            valor=factura.total_a_pagar,
             descripcion=f"Cobro factura {factura.numero}",
         )
     ]
@@ -121,17 +126,16 @@ def clasificar(
             )
         )
 
-    if valor_iva > 0:
+    if cuenta_iva is not None and valor_iva > 0:
         partidas.append(
             Partida(
-                cuenta="2408",
+                cuenta=cuenta_iva,
                 naturaleza=Naturaleza.CREDITO,
                 valor=valor_iva,
                 descripcion="IVA generado",
             )
         )
 
-    # Validar existencia de cuentas y partida doble
     try:
         for p in partidas:
             catalogo.obtener(p.cuenta)
