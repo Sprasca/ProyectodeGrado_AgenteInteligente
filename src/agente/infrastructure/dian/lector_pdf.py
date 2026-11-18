@@ -1,7 +1,15 @@
-"""Lee una factura en PDF (con texto) y la convierte en Factura de dominio usando Groq."""
+"""Lee una factura en PDF (con texto embebido) de forma local y construye una Factura de dominio.
 
-from datetime import date
-from decimal import Decimal
+No usa LLM. Extrae texto con pypdf y aplica heurísticas ligeras para rellenar campos.
+Los campos que no se puedan determinar se completan con valores por defecto seguros.
+La clasificación posterior se hace con el motor de reglas (y fallback NLP opcional).
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 from pypdf import PdfReader
@@ -9,65 +17,196 @@ from pypdf import PdfReader
 from ...domain.enums import CondicionPago
 from ...domain.errors import ErrorDeDominio
 from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero
-from ..llm.groq_cliente import extraer_factura
 
 
 class LectorPDFError(ErrorDeDominio):
     """El PDF no pudo interpretarse como factura."""
 
 
-def _dec(valor) -> Decimal:
+_RE_NIT = re.compile(r"\b(\d{9,10}(?:-\d)?)\b")
+_RE_FECHA = re.compile(
+    r"\b(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b"
+)
+_RE_MONTO = re.compile(
+    r"(?:\$\s*)?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+[.,]\d{2})\b"
+)
+_RE_NUMERO_FACTURA = re.compile(
+    r"(?:factura|fv|fe|número|numero|n[°o\.])\s*[:#]?\s*([A-Z0-9][-A-Z0-9/]{2,20})",
+    re.IGNORECASE,
+)
+_RE_TOTAL = re.compile(
+    r"(?:total\s*(?:a\s*pagar)?|valor\s*total|total\s*factura)\s*[:$]?\s*"
+    r"(?:\$\s*)?([\d.,]+)",
+    re.IGNORECASE,
+)
+_RE_SUBTOTAL = re.compile(
+    r"(?:subtotal|base\s*gravable|valor\s*bruto)\s*[:$]?\s*(?:\$\s*)?([\d.,]+)",
+    re.IGNORECASE,
+)
+_RE_IVA = re.compile(
+    r"(?:iva|impuesto)\s*(?:19\s*%?)?\s*[:$]?\s*(?:\$\s*)?([\d.,]+)",
+    re.IGNORECASE,
+)
+
+
+def _a_decimal(texto: str) -> Decimal:
+    """Convierte cadenas con formato colombiano/US a Decimal."""
+    if not texto:
+        return Decimal("0")
+    t = texto.strip().replace("$", "").replace(" ", "")
+    # 1.234.567,89  → 1234567.89
+    if "," in t and "." in t:
+        if t.rfind(",") > t.rfind("."):
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    elif "," in t:
+        # puede ser decimal europeo o miles
+        partes = t.split(",")
+        if len(partes[-1]) <= 2:
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
     try:
-        return Decimal(str(valor if valor not in (None, "") else 0))
-    except Exception:
+        return Decimal(t)
+    except InvalidOperation:
         return Decimal("0")
 
 
+def _parsear_fecha(texto: str) -> date | None:
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(texto.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def texto_de_pdf(contenido: bytes) -> str:
-    lector = PdfReader(BytesIO(contenido))
-    texto = "\n".join((p.extract_text() or "") for p in lector.pages).strip()
+    """Extrae texto de todas las páginas. Falla si no hay texto (PDF escaneado)."""
+    try:
+        lector = PdfReader(BytesIO(contenido))
+    except Exception as exc:
+        raise LectorPDFError(f"No se pudo abrir el PDF: {exc}") from exc
+    partes: list[str] = []
+    for pagina in lector.pages:
+        t = pagina.extract_text()
+        if t:
+            partes.append(t)
+    texto = "\n".join(partes).strip()
     if not texto:
-        raise LectorPDFError("El PDF no tiene texto (posible escaneo). Requiere OCR o el XML original.")
+        raise LectorPDFError(
+            "El PDF no tiene texto embebido (posible escaneo). "
+            "Use el XML original de la DIAN o un PDF con texto seleccionable."
+        )
     return texto
 
 
+def _extraer_nits(texto: str) -> list[str]:
+    return [m.group(1).replace("-", "") for m in _RE_NIT.finditer(texto)]
+
+
+def _extraer_montos(texto: str) -> list[Decimal]:
+    return [_a_decimal(m.group(1)) for m in _RE_MONTO.finditer(texto) if _a_decimal(m.group(1)) > 0]
+
+
 def factura_desde_pdf(contenido: bytes) -> Factura:
-    d = extraer_factura(texto_de_pdf(contenido))
-    try:
-        lineas = tuple(
-            LineaFactura(
-                id=str(i), descripcion=str(l.get("descripcion", "")),
-                cantidad=_dec(l.get("cantidad", 1)), valor_linea=_dec(l.get("valor_linea")),
-            )
-            for i, l in enumerate(d.get("lineas", []), start=1)
-        )
-        iva = _dec(d.get("iva_valor"))
-        impuestos = (Impuesto("01", iva, _dec(d.get("iva_porcentaje")) or None),) if iva else ()
-        subtotal = _dec(d.get("subtotal")) or sum((l.valor_linea for l in lineas), Decimal("0"))
-        descuento = _dec(d.get("descuento_global"))
-        cargos = _dec(d.get("cargos_globales"))
-        total = _dec(d.get("total_a_pagar"))
-        emisor = d.get("emisor") or {}
-        adquirente = d.get("adquirente") or {}
-        return Factura(
-            numero=str(d.get("numero", "")),
-            fecha=date.fromisoformat(str(d.get("fecha", ""))[:10]),
-            tipo_documento=str(d.get("tipo_documento") or "01"),
-            moneda=str(d.get("moneda") or "COP"),
-            emisor=Tercero(str(emisor.get("nit", "")), str(emisor.get("nombre", ""))),
-            adquirente=Tercero(str(adquirente.get("nit", "")), str(adquirente.get("nombre", ""))),
-            condicion_pago=CondicionPago.CREDITO if str(d.get("condicion_pago")).upper() == "CREDITO"
-            else CondicionPago.CONTADO,
-            medio_pago=d.get("medio_pago"),
-            lineas=lineas,
-            impuestos=impuestos,
-            subtotal_lineas=subtotal,
-            descuento_global=descuento,
-            cargos_globales=cargos,
-            base_gravable=subtotal - descuento + cargos,
-            total_con_impuestos=total,
-            total_a_pagar=total,
-            extras={"origen": "pdf"},
-        )
-    except (ValueError, TypeError) as exc:
-        raise LectorPDFError(f"No se pudo construir la factura desde el PDF: {exc}") from exc
+    """
+    Construye una Factura a partir del texto de un PDF usando solo heurísticas locales.
+
+    Completa siempre la estructura: campos no detectados reciben valores por defecto.
+    La calidad depende de que el PDF tenga texto real (no imagen).
+    """
+    texto = texto_de_pdf(contenido)
+    texto_lower = texto.lower()
+
+    # Número de factura
+    numero = "PDF-SIN-NUMERO"
+    m_num = _RE_NUMERO_FACTURA.search(texto)
+    if m_num:
+        numero = m_num.group(1).strip()
+
+    # Fecha
+    fecha = date.today()
+    for m in _RE_FECHA.finditer(texto):
+        f = _parsear_fecha(m.group(1))
+        if f and f.year >= 2010:
+            fecha = f
+            break
+
+    # NITs (primeros dos distintos suelen ser emisor / adquirente)
+    nits = _extraer_nits(texto)
+    nit_emisor = nits[0] if nits else ""
+    nit_adquirente = nits[1] if len(nits) > 1 else ""
+
+    # Totales
+    total = Decimal("0")
+    m_total = _RE_TOTAL.search(texto)
+    if m_total:
+        total = _a_decimal(m_total.group(1))
+
+    subtotal = Decimal("0")
+    m_sub = _RE_SUBTOTAL.search(texto)
+    if m_sub:
+        subtotal = _a_decimal(m_sub.group(1))
+
+    iva = Decimal("0")
+    m_iva = _RE_IVA.search(texto)
+    if m_iva:
+        iva = _a_decimal(m_iva.group(1))
+
+    # Si no hay total, intentar el monto más grande del documento
+    if total == 0:
+        montos = sorted(_extraer_montos(texto), reverse=True)
+        if montos:
+            total = montos[0]
+            if subtotal == 0 and len(montos) > 1:
+                subtotal = montos[1]
+
+    if subtotal == 0 and total > 0 and iva > 0:
+        subtotal = total - iva
+    elif subtotal == 0 and total > 0:
+        # asumir IVA 19 % incluido
+        subtotal = (total / Decimal("1.19")).quantize(Decimal("0.01"))
+        iva = total - subtotal
+
+    # Condición de pago simple
+    condicion = CondicionPago.CONTADO
+    if any(p in texto_lower for p in ("crédito", "credito", "a crédito", "plazo")):
+        condicion = CondicionPago.CREDITO
+
+    medio_pago = "10" if condicion is CondicionPago.CONTADO else None
+
+    # Línea genérica: si no se pueden detectar ítems, una sola línea con el subtotal
+    lineas: tuple[LineaFactura, ...] = (
+        LineaFactura(
+            id="1",
+            descripcion="Concepto extraído de PDF (revisar)",
+            cantidad=Decimal("1"),
+            valor_linea=subtotal if subtotal > 0 else total,
+        ),
+    )
+
+    impuestos: tuple[Impuesto, ...] = ()
+    if iva > 0:
+        impuestos = (Impuesto(codigo="01", valor=iva, porcentaje=Decimal("19")),)
+
+    return Factura(
+        numero=numero,
+        fecha=fecha,
+        tipo_documento="01",
+        moneda="COP",
+        emisor=Tercero(nit=nit_emisor, nombre="Emisor (extraído de PDF)"),
+        adquirente=Tercero(nit=nit_adquirente, nombre="Adquirente (extraído de PDF)"),
+        condicion_pago=condicion,
+        medio_pago=medio_pago,
+        lineas=lineas,
+        impuestos=impuestos,
+        subtotal_lineas=subtotal,
+        descuento_global=Decimal("0"),
+        cargos_globales=Decimal("0"),
+        base_gravable=subtotal,
+        total_con_impuestos=total if total > 0 else subtotal + iva,
+        total_a_pagar=total if total > 0 else subtotal + iva,
+        extras={"origen": "pdf-local", "texto_extraido_chars": str(len(texto))},
+    )

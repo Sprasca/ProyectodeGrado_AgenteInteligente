@@ -52,7 +52,8 @@ def test_clasifica_credito_usa_clientes(catalogo):
 
 
 def test_sin_regla_coincide_alerta(catalogo):
-    f = _factura_basica(descripcion="Servicio de consultoría espacial cuántica")
+    # Descripción deliberadamente sin ninguna palabra clave de data/puc/reglas_ingreso.csv
+    f = _factura_basica(descripcion="Concepto genérico no catalogado XYZ-999")
     resultado = clasificar(f, catalogo)
     assert resultado.estado is EstadoTransaccion.EN_ALERTA
     assert resultado.asiento is None
