@@ -6,7 +6,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
 DOCS = RAIZ / "docs"
-EXCLUIR = {"lector_pdf.py", "lector_carpeta.py"}  # dependen de Groq/pypdf, no van al navegador
+EXCLUIR = {"lector_pdf.py", "lector_carpeta.py"}  # dependen de pypdf, no van al navegador
 INCLUIR = [
     (RAIZ / "src" / "agente" / "domain", RAIZ / "src"),
     (RAIZ / "src" / "agente" / "infrastructure" / "dian", RAIZ / "src"),

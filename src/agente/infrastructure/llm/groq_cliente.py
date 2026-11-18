@@ -1,4 +1,4 @@
-"""Cliente de Groq: sugiere cuentas PUC y extrae datos de facturas en texto (PDF)."""
+"""Cliente de Groq: sugiere cuentas PUC para líneas que ninguna regla reconoce."""
 
 import json
 
@@ -53,16 +53,3 @@ def sugerir_cuenta(descripcion: str, candidatas: dict[str, str]) -> SugerenciaCu
         return None
     # Defensa contra alucinaciones: la cuenta debe estar entre las candidatas.
     return sugerencia if sugerencia.cuenta in candidatas else None
-
-
-def extraer_factura(texto_pdf: str) -> dict:
-    """Convierte el texto de una factura en PDF a un diccionario con los campos de dominio."""
-    sistema = (
-        "Extraes datos de facturas de venta colombianas. Responde SOLO un JSON con: "
-        "numero, fecha (YYYY-MM-DD), tipo_documento (por defecto '01'), moneda (por defecto 'COP'), "
-        "emisor {nit, nombre}, adquirente {nit, nombre}, condicion_pago ('CONTADO' o 'CREDITO'), "
-        "medio_pago ('10' si es efectivo, o null), lineas [{descripcion, cantidad, valor_linea}], "
-        "iva_valor, iva_porcentaje, descuento_global, cargos_globales, subtotal, total_a_pagar. "
-        "Los números van sin separador de miles y con punto decimal. Si un dato no existe, usa 0 o null."
-    )
-    return _consultar_json(sistema, texto_pdf[:12000])
