@@ -12,11 +12,11 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | Parser UBL 2.1 (Invoice y AttachedDocument básico) | Listo, con pruebas |
 | PostgreSQL + pgvector, migración inicial y carga del catálogo | Listo |
 | Caso de uso `clasificar_factura` (application) | Listo |
-| API HTTP (FastAPI / Groq u otro) | Sprint 1.1 / pendiente de decisión |
-| NLP + RAG con pgvector | Sprint 2 |
+| API HTTP (FastAPI / Groq u otro) | Listo |
+| NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba|
 | Alertas, reporte diario, exportación al ERP, auditoría | Sprint 3 |
 
-> El catálogo de `data/puc/` es una **semilla** de cuentas de ingresos por ventas. Debe validarse con el experto contable antes de usarla como regla de negocio. Las facturas de `tests/fixtures/` son sintéticas, no documentos reales.
+> El catálogo de `data/puc/` es una **semilla** de cuentas de ingresos por ventas. Las facturas de `tests/fixtures/` son sintéticas, no documentos reales. La carpeta de facturas almacena documentos sintéticos y reales que se usan como ejemplo para las pruebas.  
 
 ## Requisitos
 - Python 3.12 y [uv](https://docs.astral.sh/uv/)
@@ -28,4 +28,4 @@ cp .env.example .env
 uv sync
 docker compose up -d db
 uv run alembic upgrade head          # crea el esquema
-uv run python scripts/sembrar_puc.py # carga cuentas y reglas (idempotente)
+uv run python  # carga cuentas y reglas (idempotente)
