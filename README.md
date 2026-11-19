@@ -11,7 +11,7 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | Dominio: partida doble, catálogo PUC, motor de reglas | Listo, con pruebas |
 | Parser UBL 2.1 (Invoice y AttachedDocument básico) | Listo, con pruebas |
 | PostgreSQL + pgvector, migración inicial y carga del catálogo | Listo |
-| Caso de uso `clasificar_factura` (application) | Listo |
+| Caso de uso `clasificar_hibrido` (application) | Listo |
 | API HTTP (FastAPI / Groq u otro) | Listo |
 | NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba|
 | Alertas, reporte diario, exportación al ERP, auditoría | Sprint 3 |

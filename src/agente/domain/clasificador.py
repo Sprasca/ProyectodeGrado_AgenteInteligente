@@ -8,7 +8,7 @@ from .puc import CatalogoPUC, ReglaIngreso, normalizar
 from .resultado import ResultadoClasificacion
 
 
-def _encontrar_regla(descripcion: str, reglas: tuple[ReglaIngreso, ...]) -> ReglaIngreso | None:
+def encontrar_regla(descripcion: str, reglas: tuple[ReglaIngreso, ...]) -> ReglaIngreso | None:
     """Devuelve la primera regla cuyas palabras clave aparecen en la descripción normalizada."""
     texto = normalizar(descripcion)
     for regla in reglas:
@@ -57,7 +57,7 @@ def clasificar(
     lineas_emparejadas = 0
 
     for linea in factura.lineas:
-        regla = _encontrar_regla(linea.descripcion, catalogo.reglas)
+        regla = encontrar_regla(linea.descripcion, catalogo.reglas)
         if regla is None:
             motivos.append(f"Línea {linea.id}: ninguna regla coincide con «{linea.descripcion}».")
             continue

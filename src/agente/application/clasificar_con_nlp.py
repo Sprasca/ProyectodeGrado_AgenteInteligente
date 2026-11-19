@@ -4,7 +4,7 @@ from decimal import Decimal
 from functools import lru_cache
 
 from ..config import get_settings
-from ..domain.clasificador import clasificar
+from ..domain.clasificador import clasificar, encontrar_regla
 from ..domain.factura import Factura
 from ..domain.puc import CatalogoPUC, ReglaIngreso, normalizar
 from ..domain.resultado import ResultadoClasificacion
@@ -24,11 +24,6 @@ def recargar_catalogo() -> CatalogoPUC:
     return catalogo_por_defecto()
 
 
-def _tiene_regla(descripcion: str, catalogo: CatalogoPUC) -> bool:
-    texto = normalizar(descripcion)
-    return any(p in texto for r in catalogo.reglas for p in r.palabras_clave)
-
-
 def clasificar_hibrido(
     factura: Factura,
     catalogo: CatalogoPUC | None = None,
@@ -42,7 +37,7 @@ def clasificar_hibrido(
     if usar_nlp and factura.es_venta:
         candidatas = {r.cuenta_ingreso: (r.descripcion or r.codigo) for r in catalogo.reglas}
         for linea in factura.lineas:
-            if _tiene_regla(linea.descripcion, catalogo):
+            if encontrar_regla(linea.descripcion, catalogo.reglas) is not None:
                 continue
             try:
                 sugerencia = sugerir_cuenta(linea.descripcion, candidatas)
