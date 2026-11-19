@@ -192,6 +192,23 @@ def test_corregir_200(cliente, repo, catalogo):
     assert [p["cuenta"] for p in datos["partidas"]] == [catalogo.resolver("caja"), "4135", catalogo.cuenta_iva()]
 
 
+def test_obtener_expone_asiento_propuesto_y_corregido_en(cliente, repo, catalogo):
+    id_ = repo.guardar(resultado_aprobado(catalogo, "FV-A"))
+    antes = cliente.get(f"/transacciones/{id_}").json()
+    assert antes["asiento_propuesto"] is None
+    assert antes["corregido_en"] is None
+    propuesta = [p["cuenta"] for p in antes["partidas"]]
+
+    cuerpo = _cuerpo_correccion(catalogo)
+    cuerpo["partidas"][0]["cuenta"] = catalogo.resolver("bancos")
+    assert cliente.post(f"/transacciones/{id_}/corregir", json=cuerpo).status_code == 200
+
+    despues = cliente.get(f"/transacciones/{id_}").json()
+    assert [p["cuenta"] for p in despues["asiento_propuesto"]] == propuesta
+    assert despues["corregido_en"] is not None
+    assert despues["partidas"][0]["cuenta"] == catalogo.resolver("bancos")
+
+
 def test_corregir_inexistente_404(cliente, catalogo):
     r = cliente.post(f"/transacciones/{uuid.uuid4()}/corregir", json=_cuerpo_correccion(catalogo))
     assert r.status_code == 404

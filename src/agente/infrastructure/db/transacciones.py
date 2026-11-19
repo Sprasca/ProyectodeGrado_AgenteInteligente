@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -43,6 +43,9 @@ class TransaccionRegistrada:
     detalle_lineas: tuple[dict[str, Any], ...]
     partidas: tuple[Partida, ...]
     creado_en: datetime | None = None
+    # Lo que propuso el agente antes de la corrección del contador (None si nunca se corrigió).
+    asiento_propuesto: tuple[Partida, ...] | None = None
+    corregido_en: datetime | None = None
 
 
 class RepositorioTransacciones(Protocol):
@@ -59,7 +62,12 @@ class RepositorioTransacciones(Protocol):
         ...
 
     def corregir(self, id_transaccion: uuid.UUID, partidas: Sequence[Partida]) -> TransaccionRegistrada:
-        """Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR."""
+        """
+        Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR.
+
+        Antes guarda en asiento_propuesto las partidas del agente (solo si aún no hay una
+        propuesta guardada, para no perder la original) y marca corregido_en.
+        """
         ...
 
 
@@ -79,6 +87,21 @@ def detalle_lineas(resultado: ResultadoClasificacion) -> list[dict[str, Any]]:
     ]
 
 
+def partidas_a_json(partidas: Sequence[Partida]) -> list[dict[str, str]]:
+    """El valor va como texto para no perder precisión decimal en JSON."""
+    return [
+        {"cuenta": p.cuenta, "naturaleza": p.naturaleza.value, "valor": str(p.valor), "descripcion": p.descripcion}
+        for p in partidas
+    ]
+
+
+def partidas_desde_json(datos: Sequence[dict[str, str]]) -> tuple[Partida, ...]:
+    return tuple(
+        Partida(d["cuenta"], Naturaleza(d["naturaleza"]), Decimal(d["valor"]), d.get("descripcion", ""))
+        for d in datos
+    )
+
+
 def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
     return TransaccionRegistrada(
         id=t.id,
@@ -96,6 +119,8 @@ def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
             for p in sorted(t.partidas, key=lambda p: p.id)
         ),
         creado_en=t.creado_en,
+        asiento_propuesto=partidas_desde_json(t.asiento_propuesto) if t.asiento_propuesto is not None else None,
+        corregido_en=t.corregido_en,
     )
 
 
@@ -192,6 +217,10 @@ class RepositorioSQL:
         with self._transaccion() as sesion:
             t = self._cargar(sesion, id_transaccion)
             asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
+            if t.asiento_propuesto is None:
+                propuestas = _a_registro(t).partidas
+                t.asiento_propuesto = partidas_a_json(propuestas)
+            t.corregido_en = datetime.now(UTC)
             t.partidas = [_partida_modelo(p) for p in asiento.partidas]
             t.estado = EstadoTransaccion.CORREGIDA_CONTADOR.value
             sesion.flush()

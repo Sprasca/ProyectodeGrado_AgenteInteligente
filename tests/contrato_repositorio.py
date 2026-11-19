@@ -26,6 +26,14 @@ from agente.domain.errors import (
 )
 
 
+def _partidas_con_bancos(catalogo):
+    return [
+        Partida(catalogo.resolver("bancos"), Naturaleza.DEBITO, Decimal("119000.00"), "Cobro por banco"),
+        Partida("4135", Naturaleza.CREDITO, Decimal("100000.00"), "Ingreso"),
+        Partida(catalogo.cuenta_iva(), Naturaleza.CREDITO, Decimal("19000.00"), "IVA"),
+    ]
+
+
 class ContratoRepositorio:
     # --- guardar / obtener / listar -------------------------------------------------
 
@@ -154,6 +162,63 @@ class ContratoRepositorio:
         repo.corregir(id_, partidas_correctas(catalogo))
         with pytest.raises(TransicionInvalidaError):
             repo.corregir(id_, partidas_correctas(catalogo))
+
+    # --- asiento propuesto por el agente ---------------------------------------------
+
+    def test_sin_correccion_no_hay_asiento_propuesto(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        t = repo.obtener(id_)
+        assert t.asiento_propuesto is None
+        assert t.corregido_en is None
+
+    def test_corregir_conserva_el_asiento_propuesto_por_el_agente(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        propuesta = repo.obtener(id_).partidas
+        assert len(propuesta) == 3
+
+        repo.corregir(id_, _partidas_con_bancos(catalogo))
+
+        t = repo.obtener(id_)
+        assert t.asiento_propuesto == propuesta
+        assert t.corregido_en is not None
+        assert t.corregido_en.tzinfo is not None
+        assert catalogo.resolver("bancos") in {p.cuenta for p in t.partidas}
+        assert t.partidas != propuesta
+
+    def test_corregir_sin_asiento_del_agente_guarda_propuesta_vacia(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
+        repo.corregir(id_, partidas_correctas(catalogo))
+        t = repo.obtener(id_)
+        assert t.asiento_propuesto == ()  # el agente no propuso partidas (distinto de None: sí hubo corrección)
+        assert t.corregido_en is not None
+
+    def test_segunda_correccion_no_sobrescribe_la_propuesta_original(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        propuesta = repo.obtener(id_).partidas
+        repo.corregir(id_, _partidas_con_bancos(catalogo))
+        primera = repo.obtener(id_)
+
+        # La regla vigente no permite corregir dos veces; si se intenta, nada cambia.
+        with pytest.raises(TransicionInvalidaError):
+            repo.corregir(id_, partidas_correctas(catalogo))
+
+        t = repo.obtener(id_)
+        assert t.asiento_propuesto == propuesta
+        assert t.corregido_en == primera.corregido_en
+        assert t.partidas == primera.partidas
+
+    def test_correccion_rechazada_no_guarda_propuesta(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        descuadrado = [
+            Partida(catalogo.resolver("caja"), Naturaleza.DEBITO, Decimal("1")),
+            Partida("4135", Naturaleza.CREDITO, Decimal("2")),
+        ]
+        with pytest.raises(AsientoInvalidoError):
+            repo.corregir(id_, descuadrado)
+        t = repo.obtener(id_)
+        assert t.asiento_propuesto is None
+        assert t.corregido_en is None
+
 
     def test_corregir_asiento_descuadrado_no_cambia_nada(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
