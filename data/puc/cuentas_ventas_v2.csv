@@ -1,0 +1,42 @@
+codigo,nombre,naturaleza
+1105,CAJA,DEBITO
+110505,Caja general,DEBITO
+1110,DEPOSITO EN INSTITUCIONES FINANCIERAS Y COOPERATIVAS,DEBITO
+111005,Cuenta corriente,DEBITO
+111006,Cuenta de ahorro,DEBITO
+111011,Depósitos en el exterior,DEBITO
+1306,VENTA DE BIENES,DEBITO
+130606,Nacionales,DEBITO
+130607,Del exterior,DEBITO
+1308,PRESTACIÓN DE SERVICIOS,DEBITO
+130806,Nacionales,DEBITO
+130807,Del exterior,DEBITO
+1430,PRODUCTOS TERMINADOS,DEBITO
+143005,Productos manufacturados,DEBITO
+143010,Otros productos,DEBITO
+1435,MERCADERIAS,DEBITO
+143505,Mercancías no fabricadas por la empresa,DEBITO
+170502,Retención en la fuente,DEBITO
+171004,Impuesto a las ventas retenido,DEBITO
+171010,Impuesto industria y comercio retenido,DEBITO
+24051010,Autorretenciones,CREDITO
+241005,Impuesto al valor agregado,CREDITO
+24100501,Venta de bienes,CREDITO
+24100502,Venta de servicios,CREDITO
+24100507,Devoluciones en venta de bienes (DB),DEBITO
+24100508,Devoluciones en venta de servicios (DB),DEBITO
+290505,De clientes,CREDITO
+290510,Sobre contratos,CREDITO
+4135,COMERCIO AL POR MAYOR,CREDITO
+4175,"DEVOLUCIONES, REBAJAS Y DESCUENTOS EN VENTA DE BIENES",DEBITO
+417505,Descuento obtenido condicionado al volumen (probable),DEBITO
+417505,Descuento por pronto pago (probable),DEBITO
+4215,SERVICIOS VARIOS,CREDITO
+421505,Servicio de transporte,CREDITO
+421508,Alquiler maquinaria y equipo,CREDITO
+449002,Arriendos,CREDITO
+510802,Industria y comercio,DEBITO
+530530,Descuentos concedidos por pronto pago no planeados,DEBITO
+530535,Descuentos concedidos condicionados al volumen no planeados,DEBITO
+6135,COMERCIO AL POR MAYOR Y AL POR MENOR,DEBITO
+613595,Venta de otros productos,DEBITO
