@@ -52,9 +52,26 @@ def nuevo_numero(fabrica_sesiones):
         sesion.execute(delete(TransaccionModel).where(TransaccionModel.numero_factura.like(f"{prefijo}%")))
 
 
+class _RepositorioRastreado(RepositorioSQL):
+    """Anota los ids guardados para borrarlos aunque el número no use el prefijo de la prueba."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.creados: list[uuid.UUID] = []
+
+    def guardar(self, resultado):
+        id_ = super().guardar(resultado)
+        self.creados.append(id_)
+        return id_
+
+
 @pytest.fixture
 def repo(fabrica_sesiones, catalogo, nuevo_numero):
-    return RepositorioSQL(fabrica_sesiones, catalogo)
+    repositorio = _RepositorioRastreado(fabrica_sesiones, catalogo)
+    yield repositorio
+    if repositorio.creados:
+        with fabrica_sesiones() as sesion, sesion.begin():
+            sesion.execute(delete(TransaccionModel).where(TransaccionModel.id.in_(repositorio.creados)))
 
 
 class TestRepositorioSQL(ContratoRepositorio):

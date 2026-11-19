@@ -6,7 +6,7 @@ from decimal import Decimal
 from agente.domain.asiento import Partida
 from agente.domain.clasificador import clasificar
 from agente.domain.enums import CondicionPago, EstadoTransaccion, Naturaleza
-from agente.domain.factura import Factura, Impuesto, LineaFactura, Tercero
+from agente.domain.factura import Factura, Impuesto, LineaFactura, Tercero, numero_provisional
 from agente.domain.puc import CatalogoPUC
 from agente.domain.resultado import ResultadoClasificacion
 
@@ -62,6 +62,13 @@ def resultado_alerta_sin_asiento(catalogo: CatalogoPUC, numero: str) -> Resultad
     """EN_ALERTA sin asiento (ninguna regla coincide)."""
     r = clasificar(factura(numero, ("Concepto genérico no catalogado XYZ-999",)), catalogo)
     assert r.estado is EstadoTransaccion.EN_ALERTA and r.asiento is None
+    return r
+
+
+def resultado_sin_numero(catalogo: CatalogoPUC) -> ResultadoClasificacion:
+    """Factura cuyo documento no trae número: número provisional y EN_ALERTA (con asiento)."""
+    r = clasificar(factura(numero_provisional()), catalogo, Decimal("0.80"))
+    assert r.estado is EstadoTransaccion.EN_ALERTA and r.asiento is not None
     return r
 
 

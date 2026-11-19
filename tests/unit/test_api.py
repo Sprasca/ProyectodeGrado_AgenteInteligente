@@ -1,5 +1,6 @@
 """API con TestClient y RepositorioMemoria: sin PostgreSQL, sin Groq."""
 
+import re
 import uuid
 from pathlib import Path
 
@@ -75,6 +76,27 @@ def test_clasificar_factura_duplicada_409(cliente):
     r = _subir(cliente, **SIN_NLP)
     assert r.status_code == 409
     assert "FV-1001" in r.json()["detail"]
+
+
+def test_clasificar_factura_sin_numero_queda_en_alerta_con_numero_provisional(cliente, repo):
+    sin_numero = XML.replace(b"<cbc:ID>FV-1001</cbc:ID>", b"")
+    assert sin_numero != XML
+
+    primera = _subir(cliente, contenido=sin_numero, **SIN_NLP)
+    assert primera.status_code == 200
+    datos = primera.json()
+    assert re.fullmatch(r"SIN-NUMERO-[0-9a-f]{8}", datos["factura"]["numero"])
+    assert datos["estado"] == "EN_ALERTA"
+    assert "Factura sin número. se asignó un identificador provisional." in datos["motivos_alerta"]
+
+    guardada = cliente.get(f"/transacciones/{datos['id']}").json()
+    assert guardada["numero_factura"] == datos["factura"]["numero"]
+    assert guardada["estado"] == "EN_ALERTA"
+
+    # Cada carga recibe un identificador nuevo: no se rechaza como duplicada.
+    segunda = _subir(cliente, contenido=sin_numero, **SIN_NLP)
+    assert segunda.status_code == 200
+    assert segunda.json()["factura"]["numero"] != datos["factura"]["numero"]
 
 
 def test_clasificar_extension_no_soportada_415(cliente):
