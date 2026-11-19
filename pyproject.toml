@@ -5,12 +5,10 @@ description = "Agente inteligente para automatizar el registro de ventas bajo el
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.8",
-    "pydantic-settings>=2.4",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
-    # "lxml>=5.0",   # opcional; el parser actual usa xml.etree de la stdlib
     "groq>=1.7.0",
     "fastapi>=0.163.2",
     "uvicorn>=0.54.0",
