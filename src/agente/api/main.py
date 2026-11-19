@@ -24,7 +24,12 @@ from ..domain.errors import (
     TransicionInvalidaError,
 )
 from ..infrastructure.db.session import crear_sessionmaker
-from ..infrastructure.db.transacciones import RepositorioNoDisponibleError, RepositorioSQL, RepositorioTransacciones
+from ..infrastructure.db.transacciones import (
+    CuentaNoSembradaError,
+    RepositorioNoDisponibleError,
+    RepositorioSQL,
+    RepositorioTransacciones,
+)
 from ..infrastructure.dian.lector_pdf import factura_desde_pdf
 from ..infrastructure.dian.parser import parsear_xml
 
@@ -54,6 +59,7 @@ def _manejador(codigo: int):
 
 
 app.add_exception_handler(RepositorioNoDisponibleError, _manejador(503))
+app.add_exception_handler(CuentaNoSembradaError, _manejador(409))
 app.add_exception_handler(TransaccionNoEncontradaError, _manejador(404))
 app.add_exception_handler(FacturaDuplicadaError, _manejador(409))
 app.add_exception_handler(TransicionInvalidaError, _manejador(409))

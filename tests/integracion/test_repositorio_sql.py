@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from contrato_repositorio import ContratoRepositorio
+from fabricas import CUENTA_NO_SEMBRADA, catalogo_con_cuenta_no_sembrada
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -66,12 +67,34 @@ class _RepositorioRastreado(RepositorioSQL):
 
 
 @pytest.fixture
-def repo(fabrica_sesiones, catalogo, nuevo_numero):
-    repositorio = _RepositorioRastreado(fabrica_sesiones, catalogo)
-    yield repositorio
-    if repositorio.creados:
+def crear_repo(fabrica_sesiones, nuevo_numero):
+    """Crea repositorios rastreados; al terminar la prueba borra todo lo que guardaron."""
+    creados: list[_RepositorioRastreado] = []
+
+    def crear(catalogo):
+        repositorio = _RepositorioRastreado(fabrica_sesiones, catalogo)
+        creados.append(repositorio)
+        return repositorio
+
+    yield crear
+    ids = [id_ for r in creados for id_ in r.creados]
+    if ids:
         with fabrica_sesiones() as sesion, sesion.begin():
-            sesion.execute(delete(TransaccionModel).where(TransaccionModel.id.in_(repositorio.creados)))
+            sesion.execute(delete(TransaccionModel).where(TransaccionModel.id.in_(ids)))
+
+
+@pytest.fixture
+def repo(crear_repo, catalogo):
+    return crear_repo(catalogo)
+
+
+@pytest.fixture
+def repo_extendido(crear_repo, catalogo, fabrica_sesiones):
+    """Catálogo con una cuenta que no está en cuenta_puc: la base la rechaza por llave foránea."""
+    with fabrica_sesiones() as sesion:
+        if sesion.get(CuentaPUCModel, CUENTA_NO_SEMBRADA) is not None:
+            pytest.fail(f"La cuenta de prueba {CUENTA_NO_SEMBRADA} no debería existir en cuenta_puc.")
+    return crear_repo(catalogo_con_cuenta_no_sembrada(catalogo))
 
 
 class TestRepositorioSQL(ContratoRepositorio):

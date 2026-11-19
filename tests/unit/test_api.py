@@ -5,7 +5,13 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fabricas import resultado_alerta_con_asiento, resultado_alerta_sin_asiento, resultado_aprobado
+from fabricas import (
+    CUENTA_NO_SEMBRADA,
+    catalogo_con_cuenta_no_sembrada,
+    resultado_alerta_con_asiento,
+    resultado_alerta_sin_asiento,
+    resultado_aprobado,
+)
 from fastapi.testclient import TestClient
 from repositorio_memoria import RepositorioMemoria
 
@@ -262,6 +268,36 @@ def test_corregir_cuenta_inexistente_422(cliente, repo, catalogo):
     r = cliente.post(f"/transacciones/{id_}/corregir", json=cuerpo)
     assert r.status_code == 422
     assert "9999" in r.json()["detail"]
+
+
+def _usar_repositorio(repositorio):
+    app.dependency_overrides[get_repositorio] = lambda: repositorio
+    return TestClient(app)
+
+
+def test_clasificar_cuenta_no_sembrada_409(cliente, catalogo):
+    # La base no tiene 4135 (p. ej. el contador la agregó a data/puc y no se volvió a sembrar).
+    sin_4135 = RepositorioMemoria(catalogo, cuentas_en_bd={c.codigo for c in catalogo.cuentas} - {"4135"})
+    r = _subir(_usar_repositorio(sin_4135), **SIN_NLP)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "La cuenta 4135 no está en la base de datos. Ejecute scripts/sembrar_puc.py."
+    assert sin_4135.listar() == []
+
+
+def test_corregir_cuenta_no_sembrada_409(cliente, catalogo):
+    repositorio = RepositorioMemoria(
+        catalogo_con_cuenta_no_sembrada(catalogo), cuentas_en_bd={c.codigo for c in catalogo.cuentas}
+    )
+    id_ = repositorio.guardar(resultado_alerta_sin_asiento(catalogo, "FV-A"))
+    cuerpo = _cuerpo_correccion(catalogo)
+    cuerpo["partidas"][1]["cuenta"] = CUENTA_NO_SEMBRADA
+
+    r = _usar_repositorio(repositorio).post(f"/transacciones/{id_}/corregir", json=cuerpo)
+    assert r.status_code == 409
+    assert r.json()["detail"] == (
+        f"La cuenta {CUENTA_NO_SEMBRADA} no está en la base de datos. Ejecute scripts/sembrar_puc.py."
+    )
+    assert repositorio.obtener(id_).estado.value == "EN_ALERTA"
 
 
 def test_corregir_cuerpo_mal_formado_422(cliente, repo, catalogo):

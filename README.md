@@ -30,9 +30,16 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 cp .env.example .env
 uv sync
 docker compose up -d db
-uv run alembic upgrade head              # crea el esquema (migraciones 0001 y 0002)
+uv run alembic upgrade head              # crea el esquema (migraciones 0001 a 0003)
 uv run python scripts/sembrar_puc.py     # carga cuentas y reglas (idempotente)
 ```
+
+### Después de cada cambio en `data/puc/`
+El clasificador lee el catálogo desde los CSV de `data/puc/`, pero la base valida cada partida contra la tabla `cuenta_puc`. **Cada vez que el contador cambie `data/puc/` hay que volver a sembrar la base:**
+```bash
+uv run python scripts/sembrar_puc.py
+```
+Si no se hace, guardar o corregir una transacción que use una cuenta nueva responde **409**: `La cuenta X no está en la base de datos. Ejecute scripts/sembrar_puc.py.` (Si la API ya está corriendo, reiníciela para que relea los CSV.)
 
 ## API
 ```bash
@@ -43,10 +50,10 @@ Documentación interactiva en http://127.0.0.1:8000/docs.
 | Método y ruta | Descripción |
 |---|---|
 | `GET /salud` | Comprobación de vida |
-| `POST /facturas/clasificar?usar_nlp=true&guardar=true` | Clasifica un `.xml` o `.pdf`. Con `guardar=true` lo registra y devuelve su `id` (409 si la factura ya existe, 503 si la base no responde) |
+| `POST /facturas/clasificar?usar_nlp=true&guardar=true` | Clasifica un `.xml` o `.pdf`. Con `guardar=true` lo registra y devuelve su `id` (409 si la factura ya existe o si una cuenta no está sembrada, 503 si la base no responde). Una factura sin número recibe `SIN-NUMERO-xxxxxxxx` y queda `EN_ALERTA` |
 | `POST /carpeta/procesar` | Clasifica todos los archivos de una carpeta (no guarda) |
 | `GET /transacciones?estado=EN_ALERTA` | Lista transacciones, con filtro opcional por estado |
-| `GET /transacciones/{id}` | Transacción con sus partidas y el detalle por línea |
+| `GET /transacciones/{id}` | Transacción con sus partidas, el detalle por línea y, si fue corregida, `asiento_propuesto` (lo que propuso el agente) y `corregido_en` |
 | `POST /transacciones/{id}/aprobar` | El contador aprueba una transacción `EN_ALERTA` con asiento propuesto |
 | `POST /transacciones/{id}/corregir` | El contador reemplaza las partidas: `{"partidas": [{"cuenta": "1105", "naturaleza": "DEBITO", "valor": 119000}, ...]}` |
 

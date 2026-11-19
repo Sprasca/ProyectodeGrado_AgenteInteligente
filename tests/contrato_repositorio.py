@@ -1,7 +1,8 @@
 """Pruebas de contrato de RepositorioTransacciones.
 
 Las heredan test_repositorio_memoria.py (unitarias) y test_repositorio_sql.py (integración);
-cada módulo define los fixtures `repo` y `nuevo_numero` (genera números de factura únicos).
+cada módulo define los fixtures `repo`, `nuevo_numero` (genera números de factura únicos) y
+`repo_extendido` (su catálogo tiene CUENTA_NO_SEMBRADA, que la base no tiene).
 El `repo` de integración debe borrar al final todo lo que guardó, incluidas las facturas
 con número provisional (SIN-NUMERO-...), que no usan `nuevo_numero`.
 """
@@ -12,10 +13,13 @@ from decimal import Decimal
 
 import pytest
 from fabricas import (
+    CUENTA_NO_SEMBRADA,
+    partidas_con_cuenta_no_sembrada,
     partidas_correctas,
     resultado_alerta_con_asiento,
     resultado_alerta_sin_asiento,
     resultado_aprobado,
+    resultado_con_cuenta_no_sembrada,
     resultado_sin_numero,
 )
 
@@ -29,6 +33,7 @@ from agente.domain.errors import (
     TransicionInvalidaError,
 )
 from agente.domain.factura import MOTIVO_SIN_NUMERO
+from agente.infrastructure.db.transacciones import CuentaNoSembradaError
 
 
 def _partidas_con_bancos(catalogo):
@@ -270,3 +275,33 @@ class ContratoRepositorio:
     def test_factura_sin_numero_se_puede_aprobar_tras_revision(self, repo, catalogo):
         id_ = repo.guardar(resultado_sin_numero(catalogo))
         assert repo.aprobar(id_).estado is EstadoTransaccion.APROBADA_CONTADOR
+
+    # --- cuenta del catálogo que no está sembrada en la base -----------------------------
+
+    def test_guardar_con_cuenta_no_sembrada_lanza_error_y_no_guarda(self, repo, nuevo_numero, catalogo):
+        numero = nuevo_numero()
+        with pytest.raises(CuentaNoSembradaError) as error:
+            repo.guardar(resultado_con_cuenta_no_sembrada(catalogo, numero))
+        assert error.value.cuenta == CUENTA_NO_SEMBRADA
+        assert str(error.value) == (
+            f"La cuenta {CUENTA_NO_SEMBRADA} no está en la base de datos. Ejecute scripts/sembrar_puc.py."
+        )
+        assert all(t.numero_factura != numero for t in repo.listar())
+        # Tras el rechazo, la misma factura se puede guardar sin problema.
+        assert repo.guardar(resultado_aprobado(catalogo, numero))
+
+    def test_corregir_con_cuenta_no_sembrada_lanza_error_y_no_cambia_nada(
+        self, repo_extendido, nuevo_numero, catalogo
+    ):
+        id_ = repo_extendido.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        antes = repo_extendido.obtener(id_)
+
+        with pytest.raises(CuentaNoSembradaError) as error:
+            repo_extendido.corregir(id_, partidas_con_cuenta_no_sembrada(catalogo))
+        assert error.value.cuenta == CUENTA_NO_SEMBRADA
+
+        despues = repo_extendido.obtener(id_)
+        assert despues.estado is EstadoTransaccion.EN_ALERTA
+        assert despues.partidas == antes.partidas
+        assert despues.asiento_propuesto is None
+        assert despues.corregido_en is None

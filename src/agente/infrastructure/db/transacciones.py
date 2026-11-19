@@ -20,11 +20,27 @@ from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
 from ...domain.resultado import ResultadoClasificacion
 from ...domain.transacciones import validar_aprobacion, validar_correccion
-from .models import PartidaModel, TransaccionModel
+from .models import CuentaPUCModel, PartidaModel, TransaccionModel
 
 
 class RepositorioNoDisponibleError(Exception):
     """No hay conexión con la base de datos."""
+
+
+class CuentaNoSembradaError(Exception):
+    """Una partida usa una cuenta del catálogo (data/puc) que no se ha cargado en cuenta_puc."""
+
+    def __init__(self, cuenta: str) -> None:
+        self.cuenta = cuenta
+        super().__init__(f"La cuenta {cuenta} no está en la base de datos. Ejecute scripts/sembrar_puc.py.")
+
+
+_VIOLACION_UNICA = "23505"
+_VIOLACION_LLAVE_FORANEA = "23503"
+
+
+def _sqlstate(exc: IntegrityError) -> str | None:
+    return getattr(exc.orig, "sqlstate", None)
 
 
 @dataclass(frozen=True)
@@ -185,9 +201,22 @@ class RepositorioSQL:
                 return t.id
         except IntegrityError as exc:
             # Carrera entre dos guardados de la misma factura: la restricción UNIQUE decide.
-            if getattr(exc.orig, "sqlstate", None) == "23505":
+            if _sqlstate(exc) == _VIOLACION_UNICA:
                 raise duplicada from exc
+            partidas = resultado.asiento.partidas if resultado.asiento is not None else ()
+            self._traducir_llave_foranea(exc, partidas)
             raise
+
+    def _traducir_llave_foranea(self, exc: IntegrityError, partidas: Sequence[Partida]) -> None:
+        """Si la base rechazó una partida por la llave foránea a cuenta_puc, lanza CuentaNoSembradaError."""
+        if _sqlstate(exc) != _VIOLACION_LLAVE_FORANEA or not partidas:
+            return
+        codigos = list(dict.fromkeys(p.cuenta for p in partidas))
+        with self._transaccion() as sesion:
+            en_bd = set(sesion.scalars(select(CuentaPUCModel.codigo).where(CuentaPUCModel.codigo.in_(codigos))))
+        faltantes = [c for c in codigos if c not in en_bd]
+        if faltantes:
+            raise CuentaNoSembradaError(faltantes[0]) from exc
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None:
         with self._transaccion() as sesion:
@@ -214,14 +243,18 @@ class RepositorioSQL:
             return _a_registro(t)
 
     def corregir(self, id_transaccion: uuid.UUID, partidas: Sequence[Partida]) -> TransaccionRegistrada:
-        with self._transaccion() as sesion:
-            t = self._cargar(sesion, id_transaccion)
-            asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
-            if t.asiento_propuesto is None:
-                propuestas = _a_registro(t).partidas
-                t.asiento_propuesto = partidas_a_json(propuestas)
-            t.corregido_en = datetime.now(UTC)
-            t.partidas = [_partida_modelo(p) for p in asiento.partidas]
-            t.estado = EstadoTransaccion.CORREGIDA_CONTADOR.value
-            sesion.flush()
-            return _a_registro(t)
+        try:
+            with self._transaccion() as sesion:
+                t = self._cargar(sesion, id_transaccion)
+                asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
+                if t.asiento_propuesto is None:
+                    propuestas = _a_registro(t).partidas
+                    t.asiento_propuesto = partidas_a_json(propuestas)
+                t.corregido_en = datetime.now(UTC)
+                t.partidas = [_partida_modelo(p) for p in asiento.partidas]
+                t.estado = EstadoTransaccion.CORREGIDA_CONTADOR.value
+                sesion.flush()
+                return _a_registro(t)
+        except IntegrityError as exc:
+            self._traducir_llave_foranea(exc, partidas)
+            raise
