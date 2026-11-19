@@ -1,0 +1,198 @@
+"""Persistencia de los resultados de clasificación (tabla transaccion + partida)."""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Protocol
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
+from sqlalchemy.orm import Session, selectinload, sessionmaker
+
+from ...domain.asiento import Partida
+from ...domain.enums import EstadoTransaccion, Naturaleza
+from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
+from ...domain.puc import CatalogoPUC
+from ...domain.resultado import ResultadoClasificacion
+from ...domain.transacciones import validar_aprobacion, validar_correccion
+from .models import PartidaModel, TransaccionModel
+
+
+class RepositorioNoDisponibleError(Exception):
+    """No hay conexión con la base de datos."""
+
+
+@dataclass(frozen=True)
+class TransaccionRegistrada:
+    """Transacción tal como quedó guardada, con sus partidas y el detalle por línea."""
+
+    id: uuid.UUID
+    numero_factura: str
+    fecha: date
+    nit_adquirente: str
+    valor_total: Decimal
+    estado: EstadoTransaccion
+    confianza: Decimal
+    reglas_aplicadas: tuple[str, ...]
+    motivos_alerta: tuple[str, ...]
+    detalle_lineas: tuple[dict[str, Any], ...]
+    partidas: tuple[Partida, ...]
+    creado_en: datetime | None = None
+
+
+class RepositorioTransacciones(Protocol):
+    def guardar(self, resultado: ResultadoClasificacion) -> uuid.UUID:
+        """Registra el resultado. Lanza FacturaDuplicadaError si el número de factura ya existe."""
+        ...
+
+    def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None: ...
+
+    def listar(self, estado: EstadoTransaccion | None = None) -> list[TransaccionRegistrada]: ...
+
+    def aprobar(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada:
+        """EN_ALERTA con partidas → APROBADA_CONTADOR. Si no, TransicionInvalidaError."""
+        ...
+
+    def corregir(self, id_transaccion: uuid.UUID, partidas: Sequence[Partida]) -> TransaccionRegistrada:
+        """Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR."""
+        ...
+
+
+def detalle_lineas(resultado: ResultadoClasificacion) -> list[dict[str, Any]]:
+    """Serializa ResultadoClasificacion.lineas a JSON para la columna detalle_lineas."""
+    return [
+        {
+            "id_linea": linea.id_linea,
+            "descripcion": linea.descripcion,
+            "estado": linea.estado.value,
+            "cuenta_ingreso": linea.cuenta_ingreso,
+            "regla": linea.regla,
+            "palabras_encontradas": list(linea.palabras_encontradas),
+            "cuentas_candidatas": list(linea.cuentas_candidatas),
+        }
+        for linea in resultado.lineas
+    ]
+
+
+def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
+    return TransaccionRegistrada(
+        id=t.id,
+        numero_factura=t.numero_factura,
+        fecha=t.fecha,
+        nit_adquirente=t.nit_adquirente,
+        valor_total=t.valor_total,
+        estado=EstadoTransaccion(t.estado),
+        confianza=t.confianza,
+        reglas_aplicadas=tuple(t.reglas_aplicadas),
+        motivos_alerta=tuple(t.motivos_alerta),
+        detalle_lineas=tuple(t.detalle_lineas),
+        partidas=tuple(
+            Partida(p.cuenta_codigo, Naturaleza(p.naturaleza), p.valor, p.descripcion)
+            for p in sorted(t.partidas, key=lambda p: p.id)
+        ),
+        creado_en=t.creado_en,
+    )
+
+
+def _partida_modelo(p: Partida) -> PartidaModel:
+    return PartidaModel(
+        cuenta_codigo=p.cuenta, naturaleza=p.naturaleza.value, valor=p.valor, descripcion=p.descripcion[:200]
+    )
+
+
+class RepositorioSQL:
+    """Implementación sobre PostgreSQL con SQLAlchemy."""
+
+    def __init__(self, fabrica_sesiones: sessionmaker[Session], catalogo: CatalogoPUC) -> None:
+        self._fabrica = fabrica_sesiones
+        self._catalogo = catalogo
+
+    @contextmanager
+    def _transaccion(self) -> Iterator[Session]:
+        try:
+            with self._fabrica() as sesion, sesion.begin():
+                yield sesion
+        except (OperationalError, InterfaceError) as exc:
+            raise RepositorioNoDisponibleError(
+                "No hay conexión con PostgreSQL. Verifique que la base esté levantada "
+                "(docker compose up -d db) y que DATABASE_URL sea correcta."
+            ) from exc
+
+    def _cargar(self, sesion: Session, id_transaccion: uuid.UUID) -> TransaccionModel:
+        t = sesion.get(
+            TransaccionModel, id_transaccion, options=[selectinload(TransaccionModel.partidas)], with_for_update=True
+        )
+        if t is None:
+            raise TransaccionNoEncontradaError(f"No existe la transacción {id_transaccion}.")
+        return t
+
+    def guardar(self, resultado: ResultadoClasificacion) -> uuid.UUID:
+        factura = resultado.factura
+        duplicada = FacturaDuplicadaError(f"La factura {factura.numero} ya fue registrada.")
+        try:
+            with self._transaccion() as sesion:
+                existe = sesion.scalar(
+                    select(TransaccionModel.id).where(TransaccionModel.numero_factura == factura.numero)
+                )
+                if existe is not None:
+                    raise duplicada
+                t = TransaccionModel(
+                    id=uuid.uuid4(),
+                    numero_factura=factura.numero,
+                    fecha=factura.fecha,
+                    nit_adquirente=factura.adquirente.nit,
+                    valor_total=factura.total_a_pagar,
+                    estado=resultado.estado.value,
+                    confianza=resultado.confianza,
+                    reglas_aplicadas=list(resultado.reglas_aplicadas),
+                    motivos_alerta=list(resultado.motivos_alerta),
+                    detalle_lineas=detalle_lineas(resultado),
+                )
+                if resultado.asiento is not None:
+                    t.partidas = [_partida_modelo(p) for p in resultado.asiento.partidas]
+                sesion.add(t)
+                sesion.flush()
+                return t.id
+        except IntegrityError as exc:
+            # Carrera entre dos guardados de la misma factura: la restricción UNIQUE decide.
+            if getattr(exc.orig, "sqlstate", None) == "23505":
+                raise duplicada from exc
+            raise
+
+    def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None:
+        with self._transaccion() as sesion:
+            t = sesion.get(TransaccionModel, id_transaccion, options=[selectinload(TransaccionModel.partidas)])
+            return _a_registro(t) if t is not None else None
+
+    def listar(self, estado: EstadoTransaccion | None = None) -> list[TransaccionRegistrada]:
+        consulta = (
+            select(TransaccionModel)
+            .options(selectinload(TransaccionModel.partidas))
+            .order_by(TransaccionModel.creado_en, TransaccionModel.numero_factura)
+        )
+        if estado is not None:
+            consulta = consulta.where(TransaccionModel.estado == estado.value)
+        with self._transaccion() as sesion:
+            return [_a_registro(t) for t in sesion.scalars(consulta)]
+
+    def aprobar(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada:
+        with self._transaccion() as sesion:
+            t = self._cargar(sesion, id_transaccion)
+            validar_aprobacion(EstadoTransaccion(t.estado), bool(t.partidas))
+            t.estado = EstadoTransaccion.APROBADA_CONTADOR.value
+            sesion.flush()
+            return _a_registro(t)
+
+    def corregir(self, id_transaccion: uuid.UUID, partidas: Sequence[Partida]) -> TransaccionRegistrada:
+        with self._transaccion() as sesion:
+            t = self._cargar(sesion, id_transaccion)
+            asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
+            t.partidas = [_partida_modelo(p) for p in asiento.partidas]
+            t.estado = EstadoTransaccion.CORREGIDA_CONTADOR.value
+            sesion.flush()
+            return _a_registro(t)

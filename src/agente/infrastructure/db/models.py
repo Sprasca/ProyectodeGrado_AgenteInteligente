@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import ARRAY, JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -47,6 +47,7 @@ class TransaccionModel(Base):
     confianza: Mapped[Decimal] = mapped_column(Numeric(4, 3))
     reglas_aplicadas: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     motivos_alerta: Mapped[list[str]] = mapped_column(JSON, default=list)
+    detalle_lineas: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
