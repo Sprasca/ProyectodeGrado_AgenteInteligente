@@ -13,6 +13,14 @@ class CondicionPago(StrEnum):
     CREDITO = "CREDITO"
 
 
+class EstadoLinea(StrEnum):
+    """Resultado del emparejamiento de una línea de la factura contra las reglas."""
+
+    CLASIFICADA = "CLASIFICADA"
+    SIN_REGLA = "SIN_REGLA"
+    AMBIGUA = "AMBIGUA"
+
+
 class EstadoTransaccion(StrEnum):
     APROBADA_AUTOMATICA = "APROBADA_AUTOMATICA"
     EN_ALERTA = "EN_ALERTA"

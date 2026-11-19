@@ -8,6 +8,7 @@ cargado (por código preferido o por nombre).
 from __future__ import annotations
 
 import csv
+import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,11 +41,45 @@ class ReglaIngreso:
     palabras_clave: tuple[str, ...]
     descripcion: str = ""
 
+    def palabras_coincidentes(self, palabras_texto: tuple[str, ...]) -> tuple[str, ...]:
+        """Palabras clave distintas de la regla que aparecen en el texto (ya dividido con palabras())."""
+        return tuple(clave for clave in dict.fromkeys(self.palabras_clave) if coincide_clave(clave, palabras_texto))
+
+
+_RE_PALABRA = re.compile(r"\w+")
+
 
 def normalizar(texto: str) -> str:
     sin_tildes = unicodedata.normalize("NFD", texto)
     sin_tildes = "".join(c for c in sin_tildes if unicodedata.category(c) != "Mn")
     return sin_tildes.lower().strip()
+
+
+def palabras(texto: str) -> tuple[str, ...]:
+    """Normaliza el texto y lo divide en palabras (expresión regular \\w+)."""
+    return tuple(_RE_PALABRA.findall(normalizar(texto)))
+
+
+def _misma_palabra(palabra: str, clave: str) -> bool:
+    """Igualdad exacta o plural simple (clave + "s" o clave + "es")."""
+    return palabra in (clave, clave + "s", clave + "es")
+
+
+def coincide_clave(clave: str, palabras_texto: tuple[str, ...]) -> bool:
+    """
+    Una clave de una palabra coincide con una palabra completa del texto (o su plural).
+    Una clave de varias palabras coincide si aparecen consecutivas; el plural solo se
+    admite en la última. Nunca coincide como subcadena ("local" no está en "localidad").
+    """
+    partes = palabras(clave)
+    if not partes:
+        return False
+    n = len(partes)
+    for i in range(len(palabras_texto) - n + 1):
+        ventana = palabras_texto[i : i + n]
+        if ventana[:-1] == partes[:-1] and _misma_palabra(ventana[-1], partes[-1]):
+            return True
+    return False
 
 
 class CatalogoPUC:

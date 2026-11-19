@@ -4,7 +4,8 @@ from decimal import Decimal
 from functools import lru_cache
 
 from ..config import get_settings
-from ..domain.clasificador import clasificar, encontrar_regla
+from ..domain.clasificador import clasificar, emparejar_linea
+from ..domain.enums import EstadoLinea
 from ..domain.factura import Factura
 from ..domain.puc import CatalogoPUC, ReglaIngreso, normalizar
 from ..domain.resultado import ResultadoClasificacion
@@ -37,7 +38,8 @@ def clasificar_hibrido(
     if usar_nlp and factura.es_venta:
         candidatas = {r.cuenta_ingreso: (r.descripcion or r.codigo) for r in catalogo.reglas}
         for linea in factura.lineas:
-            if encontrar_regla(linea.descripcion, catalogo.reglas) is not None:
+            # Solo las líneas SIN_REGLA van al LLM; las AMBIGUA quedan para el contador.
+            if emparejar_linea(linea, catalogo.reglas).estado is not EstadoLinea.SIN_REGLA:
                 continue
             try:
                 sugerencia = sugerir_cuenta(linea.descripcion, candidatas)
