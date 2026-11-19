@@ -16,7 +16,7 @@ from pypdf import PdfReader
 
 from ...domain.enums import CondicionPago
 from ...domain.errors import ErrorDeDominio
-from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero
+from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero, numero_provisional
 
 
 class LectorPDFError(ErrorDeDominio):
@@ -30,12 +30,14 @@ _RE_FECHA = re.compile(
 _RE_MONTO = re.compile(
     r"(?:\$\s*)?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+[.,]\d{2})\b"
 )
+# La palabra clave debe ser palabra completa: sin \b y (?![a-z]) "Fecha" daba el número "cha".
 _RE_NUMERO_FACTURA = re.compile(
-    r"(?:factura|fv|fe|número|numero|n[°o\.])\s*[:#]?\s*([A-Z0-9][-A-Z0-9/]{2,20})",
+    r"\b(?:factura|fv|fe|número|numero|n[°o\.])(?![a-z])\s*[:#]?\s*([A-Z0-9][-A-Z0-9/]{2,20})",
     re.IGNORECASE,
 )
+# \b evita que "total" coincida dentro de "Subtotal".
 _RE_TOTAL = re.compile(
-    r"(?:total\s*(?:a\s*pagar)?|valor\s*total|total\s*factura)\s*[:$]?\s*"
+    r"\b(?:total\s*(?:a\s*pagar)?|valor\s*total|total\s*factura)\s*[:$]?\s*"
     r"(?:\$\s*)?([\d.,]+)",
     re.IGNORECASE,
 )
@@ -121,10 +123,8 @@ def factura_desde_pdf(contenido: bytes) -> Factura:
     texto_lower = texto.lower()
 
     # Número de factura
-    numero = "PDF-SIN-NUMERO"
     m_num = _RE_NUMERO_FACTURA.search(texto)
-    if m_num:
-        numero = m_num.group(1).strip()
+    numero = m_num.group(1).strip() if m_num else numero_provisional()
 
     # Fecha
     fecha = date.today()

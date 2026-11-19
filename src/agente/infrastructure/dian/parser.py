@@ -13,7 +13,7 @@ from xml.etree import ElementTree as ET
 
 from ...domain.enums import CondicionPago
 from ...domain.errors import ErrorDeDominio
-from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero
+from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero, numero_provisional
 
 # Namespaces habituales en UBL 2.1 Colombia
 NS = {
@@ -118,7 +118,7 @@ def parsear_xml(contenido: str | bytes) -> Factura:
 
     inv = _extraer_invoice(raiz)
 
-    numero = _texto(inv, "cbc:ID") or "SIN-NUMERO"
+    numero = _texto(inv, "cbc:ID") or numero_provisional()
     tipo_documento = _texto(inv, "cbc:InvoiceTypeCode", "01") or "01"
     moneda = _texto(inv, "cbc:DocumentCurrencyCode", "COP") or "COP"
     fecha = _fecha(inv, "cbc:IssueDate")
@@ -184,7 +184,7 @@ def parsear_xml(contenido: str | bytes) -> Factura:
 
     # Completar totales a partir de las líneas si vienen en cero
     if subtotal == 0 and lineas:
-        subtotal = sum((l.valor_linea for l in lineas), Decimal("0"))
+        subtotal = sum((linea.valor_linea for linea in lineas), Decimal("0"))
     if base == 0:
         base = subtotal - descuento + cargos
     if total_con_imp == 0:

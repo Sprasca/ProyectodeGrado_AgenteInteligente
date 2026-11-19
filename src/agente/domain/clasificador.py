@@ -1,20 +1,61 @@
 from decimal import Decimal
 
 from .asiento import AsientoContable, Partida
-from .enums import CondicionPago, EstadoTransaccion, Naturaleza
+from .enums import CondicionPago, EstadoLinea, EstadoTransaccion, Naturaleza
 from .errors import AsientoInvalidoError, CuentaNoExisteError
-from .factura import CODIGO_IVA, MEDIO_PAGO_EFECTIVO, Factura
-from .puc import CatalogoPUC, ReglaIngreso, normalizar
-from .resultado import ResultadoClasificacion
+from .factura import CODIGO_IVA, MEDIO_PAGO_EFECTIVO, MOTIVO_SIN_NUMERO, Factura, LineaFactura
+from .puc import CatalogoPUC, ReglaIngreso, palabras
+from .resultado import ClasificacionLinea, ResultadoClasificacion
 
 
-def encontrar_regla(descripcion: str, reglas: tuple[ReglaIngreso, ...]) -> ReglaIngreso | None:
-    """Devuelve la primera regla cuyas palabras clave aparecen en la descripción normalizada."""
-    texto = normalizar(descripcion)
-    for regla in reglas:
-        if any(palabra in texto for palabra in regla.palabras_clave):
-            return regla
-    return None
+def emparejar_linea(linea: LineaFactura, reglas: tuple[ReglaIngreso, ...]) -> ClasificacionLinea:
+    """
+    Evalúa TODAS las reglas contra la descripción de la línea.
+
+    Puntaje de una regla = número de palabras clave distintas que coinciden como palabra
+    completa (o plural simple). Gana el puntaje máximo; si en el máximo empatan cuentas
+    distintas, la línea es AMBIGUA y no se clasifica.
+    """
+    tokens = palabras(linea.descripcion)
+    con_puntaje = [(r, encontradas) for r in reglas if (encontradas := r.palabras_coincidentes(tokens))]
+
+    if not con_puntaje:
+        return ClasificacionLinea(
+            id_linea=linea.id,
+            descripcion=linea.descripcion,
+            estado=EstadoLinea.SIN_REGLA,
+            cuenta_ingreso=None,
+            regla=None,
+            palabras_encontradas=(),
+            cuentas_candidatas=(),
+        )
+
+    maximo = max(len(encontradas) for _, encontradas in con_puntaje)
+    ganadoras = [(r, encontradas) for r, encontradas in con_puntaje if len(encontradas) == maximo]
+    cuentas = tuple(dict.fromkeys(r.cuenta_ingreso for r, _ in ganadoras))
+    palabras_encontradas = tuple(dict.fromkeys(p for _, encontradas in ganadoras for p in encontradas))
+
+    if len(cuentas) > 1:
+        return ClasificacionLinea(
+            id_linea=linea.id,
+            descripcion=linea.descripcion,
+            estado=EstadoLinea.AMBIGUA,
+            cuenta_ingreso=None,
+            regla=None,
+            palabras_encontradas=palabras_encontradas,
+            cuentas_candidatas=cuentas,
+        )
+
+    regla = ganadoras[0][0]
+    return ClasificacionLinea(
+        id_linea=linea.id,
+        descripcion=linea.descripcion,
+        estado=EstadoLinea.CLASIFICADA,
+        cuenta_ingreso=regla.cuenta_ingreso,
+        regla=regla.codigo,
+        palabras_encontradas=palabras_encontradas,
+        cuentas_candidatas=cuentas,
+    )
 
 
 def clasificar(
@@ -30,54 +71,57 @@ def clasificar(
     """
     motivos: list[str] = []
     reglas_aplicadas: list[str] = []
+    lineas: list[ClasificacionLinea] = []
+
+    def en_alerta(confianza: Decimal, reglas: tuple[str, ...] = ()) -> ResultadoClasificacion:
+        return ResultadoClasificacion(
+            factura=factura,
+            asiento=None,
+            estado=EstadoTransaccion.EN_ALERTA,
+            confianza=confianza,
+            reglas_aplicadas=reglas,
+            motivos_alerta=tuple(motivos),
+            lineas=tuple(lineas),
+        )
+
+    # Un número provisional impide la aprobación automática: el motivo deja la factura EN_ALERTA.
+    if factura.tiene_numero_provisional:
+        motivos.append(MOTIVO_SIN_NUMERO)
 
     if not factura.es_venta:
         motivos.append(f"Tipo de documento {factura.tipo_documento!r} no es de venta (RN01).")
-        return ResultadoClasificacion(
-            factura=factura,
-            asiento=None,
-            estado=EstadoTransaccion.EN_ALERTA,
-            confianza=Decimal("0"),
-            reglas_aplicadas=(),
-            motivos_alerta=tuple(motivos),
-        )
+        return en_alerta(Decimal("0"))
 
     if not factura.lineas:
         motivos.append("La factura no tiene líneas de detalle.")
-        return ResultadoClasificacion(
-            factura=factura,
-            asiento=None,
-            estado=EstadoTransaccion.EN_ALERTA,
-            confianza=Decimal("0"),
-            reglas_aplicadas=(),
-            motivos_alerta=tuple(motivos),
-        )
+        return en_alerta(Decimal("0"))
 
     ingresos_por_cuenta: dict[str, Decimal] = {}
     lineas_emparejadas = 0
 
     for linea in factura.lineas:
-        regla = encontrar_regla(linea.descripcion, catalogo.reglas)
-        if regla is None:
+        clasificacion = emparejar_linea(linea, catalogo.reglas)
+        lineas.append(clasificacion)
+        if clasificacion.estado is EstadoLinea.SIN_REGLA:
             motivos.append(f"Línea {linea.id}: ninguna regla coincide con «{linea.descripcion}».")
             continue
+        if clasificacion.estado is EstadoLinea.AMBIGUA:
+            motivos.append(
+                f"Línea {linea.id}: «{linea.descripcion}» es ambigua entre las cuentas "
+                f"{', '.join(clasificacion.cuentas_candidatas)} "
+                f"(palabras: {', '.join(clasificacion.palabras_encontradas)})."
+            )
+            continue
+        cuenta = clasificacion.cuenta_ingreso
+        assert cuenta is not None and clasificacion.regla is not None
         lineas_emparejadas += 1
-        if regla.codigo not in reglas_aplicadas:
-            reglas_aplicadas.append(regla.codigo)
-        ingresos_por_cuenta[regla.cuenta_ingreso] = (
-            ingresos_por_cuenta.get(regla.cuenta_ingreso, Decimal("0")) + linea.valor_linea
-        )
+        if clasificacion.regla not in reglas_aplicadas:
+            reglas_aplicadas.append(clasificacion.regla)
+        ingresos_por_cuenta[cuenta] = ingresos_por_cuenta.get(cuenta, Decimal("0")) + linea.valor_linea
 
     if not ingresos_por_cuenta:
         motivos.append("Ninguna línea pudo clasificarse con las reglas actuales.")
-        return ResultadoClasificacion(
-            factura=factura,
-            asiento=None,
-            estado=EstadoTransaccion.EN_ALERTA,
-            confianza=Decimal("0"),
-            reglas_aplicadas=(),
-            motivos_alerta=tuple(motivos),
-        )
+        return en_alerta(Decimal("0"))
 
     confianza = (Decimal(lineas_emparejadas) / Decimal(len(factura.lineas))).quantize(Decimal("0.001"))
 
@@ -98,14 +142,7 @@ def clasificar(
         cuenta_iva = catalogo.cuenta_iva() if valor_iva > 0 else None
     except CuentaNoExisteError as exc:
         motivos.append(str(exc))
-        return ResultadoClasificacion(
-            factura=factura,
-            asiento=None,
-            estado=EstadoTransaccion.EN_ALERTA,
-            confianza=confianza,
-            reglas_aplicadas=tuple(reglas_aplicadas),
-            motivos_alerta=tuple(motivos),
-        )
+        return en_alerta(confianza, tuple(reglas_aplicadas))
 
     partidas: list[Partida] = [
         Partida(
@@ -142,14 +179,7 @@ def clasificar(
         asiento = AsientoContable(tuple(partidas))
     except (CuentaNoExisteError, AsientoInvalidoError) as exc:
         motivos.append(str(exc))
-        return ResultadoClasificacion(
-            factura=factura,
-            asiento=None,
-            estado=EstadoTransaccion.EN_ALERTA,
-            confianza=confianza,
-            reglas_aplicadas=tuple(reglas_aplicadas),
-            motivos_alerta=tuple(motivos),
-        )
+        return en_alerta(confianza, tuple(reglas_aplicadas))
 
     if confianza < umbral_confianza:
         motivos.append(f"Confianza {confianza} por debajo del umbral {umbral_confianza}.")
@@ -167,4 +197,5 @@ def clasificar(
         confianza=confianza,
         reglas_aplicadas=tuple(reglas_aplicadas),
         motivos_alerta=tuple(motivos),
+        lineas=tuple(lineas),
     )
