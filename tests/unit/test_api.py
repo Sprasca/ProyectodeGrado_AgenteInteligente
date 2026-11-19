@@ -93,7 +93,7 @@ def test_clasificar_factura_sin_numero_queda_en_alerta_con_numero_provisional(cl
     datos = primera.json()
     assert re.fullmatch(r"SIN-NUMERO-[0-9a-f]{8}", datos["factura"]["numero"])
     assert datos["estado"] == "EN_ALERTA"
-    assert "Factura sin número. se asignó un identificador provisional." in datos["motivos_alerta"]
+    assert "Factura sin número. Se asignó un identificador provisional." in datos["motivos_alerta"]
 
     guardada = cliente.get(f"/transacciones/{datos['id']}").json()
     assert guardada["numero_factura"] == datos["factura"]["numero"]
