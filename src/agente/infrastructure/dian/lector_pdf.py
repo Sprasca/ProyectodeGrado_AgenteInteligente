@@ -34,8 +34,9 @@ _RE_NUMERO_FACTURA = re.compile(
     r"(?:factura|fv|fe|número|numero|n[°o\.])\s*[:#]?\s*([A-Z0-9][-A-Z0-9/]{2,20})",
     re.IGNORECASE,
 )
+# \b evita que "total" coincida dentro de "Subtotal".
 _RE_TOTAL = re.compile(
-    r"(?:total\s*(?:a\s*pagar)?|valor\s*total|total\s*factura)\s*[:$]?\s*"
+    r"\b(?:total\s*(?:a\s*pagar)?|valor\s*total|total\s*factura)\s*[:$]?\s*"
     r"(?:\$\s*)?([\d.,]+)",
     re.IGNORECASE,
 )

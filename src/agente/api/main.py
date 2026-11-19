@@ -34,7 +34,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @lru_cache
 def _fabrica_sesiones() -> sessionmaker[Session]:
-    return crear_sessionmaker()
+    # Sin tiempo de espera, una base caída deja la petición colgada en vez de responder 503.
+    return crear_sessionmaker(connect_timeout=5)
 
 
 def get_repositorio() -> RepositorioTransacciones:

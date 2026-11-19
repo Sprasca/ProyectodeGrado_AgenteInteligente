@@ -184,7 +184,7 @@ def parsear_xml(contenido: str | bytes) -> Factura:
 
     # Completar totales a partir de las líneas si vienen en cero
     if subtotal == 0 and lineas:
-        subtotal = sum((l.valor_linea for l in lineas), Decimal("0"))
+        subtotal = sum((linea.valor_linea for linea in lineas), Decimal("0"))
     if base == 0:
         base = subtotal - descuento + cargos
     if total_con_imp == 0:
