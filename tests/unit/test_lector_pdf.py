@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -5,6 +6,9 @@ from io import BytesIO
 import pytest
 from reportlab.pdfgen import canvas
 
+from agente.domain.clasificador import clasificar
+from agente.domain.enums import EstadoTransaccion
+from agente.domain.factura import MOTIVO_SIN_NUMERO
 from agente.infrastructure.dian.lector_pdf import LectorPDFError, factura_desde_pdf
 
 
@@ -44,6 +48,26 @@ def test_pdf_con_texto_extrae_numero_total_e_iva():
     assert len(iva) == 1
     assert iva[0].valor == Decimal("19000.00")
     assert factura.extras["origen"] == "pdf-local"
+
+
+def test_pdf_sin_numero_recibe_numero_provisional_y_queda_en_alerta(catalogo):
+    contenido = _pdf(
+        [
+            "Fecha: 2025-03-15",
+            "NIT emisor: 900123456-1",
+            "Concepto: Venta de mercancia",
+            "Subtotal: $ 100.000,00",
+            "IVA 19%: $ 19.000,00",
+            "Total a pagar: $ 119.000,00",
+        ]
+    )
+    factura = factura_desde_pdf(contenido)
+    assert re.fullmatch(r"SIN-NUMERO-[0-9a-f]{8}", factura.numero)
+    assert factura.tiene_numero_provisional
+
+    resultado = clasificar(factura, catalogo, Decimal("0.80"))
+    assert resultado.estado is EstadoTransaccion.EN_ALERTA
+    assert MOTIVO_SIN_NUMERO in resultado.motivos_alerta
 
 
 def test_pdf_sin_texto_lanza_error():

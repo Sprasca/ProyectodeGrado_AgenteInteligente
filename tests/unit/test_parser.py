@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -36,6 +37,14 @@ def test_attached_document_extrae_igual_que_invoice_directo():
     assert adjunto == directo
     assert adjunto.numero == "FV-1001"  # el del Invoice embebido, no el ID del contenedor
     assert adjunto.total_a_pagar == Decimal("119000.00")
+
+
+def test_xml_sin_numero_recibe_numero_provisional():
+    xml = (FIXTURES / "factura_comercio_contado.xml").read_text(encoding="utf-8")
+    factura = parsear_xml(xml.replace("<cbc:ID>FV-1001</cbc:ID>", ""))
+    assert re.fullmatch(r"SIN-NUMERO-[0-9a-f]{8}", factura.numero)
+    assert factura.tiene_numero_provisional
+    assert not parsear_xml(xml).tiene_numero_provisional
 
 
 def test_attached_document_sin_invoice_lanza_error():

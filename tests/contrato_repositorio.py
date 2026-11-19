@@ -2,8 +2,11 @@
 
 Las heredan test_repositorio_memoria.py (unitarias) y test_repositorio_sql.py (integración);
 cada módulo define los fixtures `repo` y `nuevo_numero` (genera números de factura únicos).
+El `repo` de integración debe borrar al final todo lo que guardó, incluidas las facturas
+con número provisional (SIN-NUMERO-...), que no usan `nuevo_numero`.
 """
 
+import re
 import uuid
 from decimal import Decimal
 
@@ -13,6 +16,7 @@ from fabricas import (
     resultado_alerta_con_asiento,
     resultado_alerta_sin_asiento,
     resultado_aprobado,
+    resultado_sin_numero,
 )
 
 from agente.domain.asiento import Partida
@@ -24,6 +28,7 @@ from agente.domain.errors import (
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
 )
+from agente.domain.factura import MOTIVO_SIN_NUMERO
 
 
 def _partidas_con_bancos(catalogo):
@@ -246,3 +251,22 @@ class ContratoRepositorio:
     def test_corregir_inexistente(self, repo, catalogo):
         with pytest.raises(TransaccionNoEncontradaError):
             repo.corregir(uuid.uuid4(), partidas_correctas(catalogo))
+
+    # --- factura sin número ------------------------------------------------------------
+
+    def test_factura_sin_numero_se_guarda_en_alerta_con_motivo(self, repo, catalogo):
+        id_ = repo.guardar(resultado_sin_numero(catalogo))
+        t = repo.obtener(id_)
+        assert re.fullmatch(r"SIN-NUMERO-[0-9a-f]{8}", t.numero_factura)
+        assert t.estado is EstadoTransaccion.EN_ALERTA
+        assert MOTIVO_SIN_NUMERO in t.motivos_alerta
+        assert t in repo.listar(EstadoTransaccion.EN_ALERTA)
+
+    def test_dos_facturas_sin_numero_no_se_consideran_duplicadas(self, repo, catalogo):
+        primera = repo.obtener(repo.guardar(resultado_sin_numero(catalogo)))
+        segunda = repo.obtener(repo.guardar(resultado_sin_numero(catalogo)))
+        assert primera.numero_factura != segunda.numero_factura
+
+    def test_factura_sin_numero_se_puede_aprobar_tras_revision(self, repo, catalogo):
+        id_ = repo.guardar(resultado_sin_numero(catalogo))
+        assert repo.aprobar(id_).estado is EstadoTransaccion.APROBADA_CONTADOR

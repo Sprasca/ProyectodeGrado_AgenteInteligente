@@ -1,3 +1,5 @@
+import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -8,6 +10,15 @@ from .enums import CondicionPago
 TIPOS_VENTA = frozenset({"01", "02", "03"})
 CODIGO_IVA = "01"
 MEDIO_PAGO_EFECTIVO = "10"
+
+PREFIJO_NUMERO_PROVISIONAL = "SIN-NUMERO-"
+_RE_NUMERO_PROVISIONAL = re.compile(rf"{PREFIJO_NUMERO_PROVISIONAL}[0-9a-f]{{8}}")
+MOTIVO_SIN_NUMERO = "Factura sin número. se asignó un identificador provisional."
+
+
+def numero_provisional() -> str:
+    """Identificador para una factura cuyo documento no trae número: SIN-NUMERO-xxxxxxxx."""
+    return PREFIJO_NUMERO_PROVISIONAL + uuid.uuid4().hex[:8]
 
 
 @dataclass(frozen=True)
@@ -54,3 +65,7 @@ class Factura:
     @property
     def es_venta(self) -> bool:
         return self.tipo_documento in TIPOS_VENTA
+
+    @property
+    def tiene_numero_provisional(self) -> bool:
+        return _RE_NUMERO_PROVISIONAL.fullmatch(self.numero) is not None
