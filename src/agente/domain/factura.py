@@ -13,7 +13,7 @@ MEDIO_PAGO_EFECTIVO = "10"
 
 PREFIJO_NUMERO_PROVISIONAL = "SIN-NUMERO-"
 _RE_NUMERO_PROVISIONAL = re.compile(rf"{PREFIJO_NUMERO_PROVISIONAL}[0-9a-f]{{8}}")
-MOTIVO_SIN_NUMERO = "Factura sin número. se asignó un identificador provisional."
+MOTIVO_SIN_NUMERO = "Factura sin número. Se asignó un identificador provisional."
 
 
 def numero_provisional() -> str:
