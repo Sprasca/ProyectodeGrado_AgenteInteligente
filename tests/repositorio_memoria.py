@@ -61,5 +61,11 @@ class RepositorioMemoria:
     def corregir(self, id_transaccion: uuid.UUID, partidas: Sequence[Partida]) -> TransaccionRegistrada:
         t = self._cargar(id_transaccion)
         asiento = validar_correccion(t.estado, partidas, self._catalogo)
-        self._por_id[t.id] = replace(t, partidas=asiento.partidas, estado=EstadoTransaccion.CORREGIDA_CONTADOR)
+        self._por_id[t.id] = replace(
+            t,
+            partidas=asiento.partidas,
+            estado=EstadoTransaccion.CORREGIDA_CONTADOR,
+            asiento_propuesto=t.asiento_propuesto if t.asiento_propuesto is not None else t.partidas,
+            corregido_en=datetime.now(UTC),
+        )
         return self._por_id[t.id]

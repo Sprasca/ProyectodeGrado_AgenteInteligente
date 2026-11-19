@@ -48,6 +48,9 @@ class TransaccionModel(Base):
     reglas_aplicadas: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     motivos_alerta: Mapped[list[str]] = mapped_column(JSON, default=list)
     detalle_lineas: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # Partidas que propuso el agente; se llena en la primera corrección del contador.
+    asiento_propuesto: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    corregido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
