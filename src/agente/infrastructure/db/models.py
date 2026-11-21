@@ -106,3 +106,16 @@ class PartidaModel(Base):
     descripcion: Mapped[str] = mapped_column(String(200), default="")
 
     transaccion: Mapped[TransaccionModel] = relationship(back_populates="partidas")
+
+
+class UsuarioModel(Base):
+    __tablename__ = "usuario"
+    __table_args__ = (CheckConstraint("rol IN ('CONTADOR', 'AUXILIAR', 'ADMIN')", name="ck_usuario_rol"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nombre_usuario: Mapped[str] = mapped_column(String(60), unique=True)
+    nombre_completo: Mapped[str] = mapped_column(String(200))
+    hash_contrasena: Mapped[str] = mapped_column(Text)  # Argon2id
+    rol: Mapped[str] = mapped_column(String(10))
+    activo: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

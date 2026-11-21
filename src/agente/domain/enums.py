@@ -42,3 +42,11 @@ class EstadoTransaccion(StrEnum):
     EN_ALERTA = "EN_ALERTA"
     APROBADA_CONTADOR = "APROBADA_CONTADOR"
     CORREGIDA_CONTADOR = "CORREGIDA_CONTADOR"
+
+
+class Rol(StrEnum):
+    """Rol de un usuario; sus permisos se definen en agente.api.permisos."""
+
+    CONTADOR = "CONTADOR"
+    AUXILIAR = "AUXILIAR"
+    ADMIN = "ADMIN"
