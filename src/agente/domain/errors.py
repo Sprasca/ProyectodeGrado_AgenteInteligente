@@ -79,3 +79,7 @@ class UltimoAdministradorError(ErrorDeDominio):
 
 class MotivoInvalidoError(DatosInvalidosError):
     """Falta el motivo de una acción del contador o es demasiado corto."""
+
+
+class RutaNoPermitidaError(ErrorDeDominio):
+    """La carpeta pedida está fuera de DIRECTORIO_ENTRADA."""

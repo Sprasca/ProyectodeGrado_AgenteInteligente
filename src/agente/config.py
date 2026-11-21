@@ -39,6 +39,12 @@ class Settings:
         if not minutos.isdigit() or int(minutos) <= 0:
             raise ValueError(f"JWT_MINUTOS debe ser un número entero positivo, no {minutos!r}.")
         self.jwt_minutos = int(minutos)
+        # Orígenes (navegador) que pueden llamar la API, separados por comas. Vacío: ninguno.
+        self.cors_origenes = [o.strip().rstrip("/") for o in obtener("CORS_ORIGENES", "").split(",") if o.strip()]
+        if "*" in self.cors_origenes:
+            raise ValueError("CORS_ORIGENES no acepta '*': liste los orígenes permitidos, separados por comas.")
+        # /carpeta/procesar solo lee carpetas dentro de este directorio.
+        self.directorio_entrada = Path(obtener("DIRECTORIO_ENTRADA", str(self.directorio_facturas)))
 
 
 @lru_cache

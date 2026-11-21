@@ -32,6 +32,7 @@ from ..domain.errors import (
     DatosInvalidosError,
     FacturaDuplicadaError,
     ReglaNoEncontradaError,
+    RutaNoPermitidaError,
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
     UltimoAdministradorError,
@@ -47,6 +48,7 @@ from ..infrastructure.db.transacciones import (
     RepositorioSQL,
     RepositorioTransacciones,
 )
+from ..infrastructure.dian.lector_carpeta import carpeta_permitida
 from ..infrastructure.dian.lector_pdf import factura_desde_pdf
 from ..infrastructure.dian.parser import parsear_xml
 from .autenticacion import RepoUsuarios, crear_token, validar_secreto
@@ -60,7 +62,14 @@ validar_secreto(get_settings())
 Autorizado = Depends(autorizar)
 
 app = FastAPI(title="Agente inteligente PUC", version="0.3.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# CORS solo para los orígenes de CORS_ORIGENES (vacío por defecto: ningún navegador de otro origen).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origenes,
+    allow_methods=["GET", "POST", "PUT"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Disposition", "X-Contenido-SHA256"],
+)
 
 
 def get_catalogo() -> CatalogoPUC:
@@ -106,6 +115,7 @@ app.add_exception_handler(ReglaNoEncontradaError, _manejador(404))
 app.add_exception_handler(UsuarioDuplicadoError, _manejador(409))
 app.add_exception_handler(UsuarioNoEncontradoError, _manejador(404))
 app.add_exception_handler(UltimoAdministradorError, _manejador(409))
+app.add_exception_handler(RutaNoPermitidaError, _manejador(403))
 
 
 @app.exception_handler(DatosInvalidosError)
@@ -120,7 +130,8 @@ def _conflicto_regla(_: Request, exc: ConflictoReglaError) -> JSONResponse:
 
 
 class SolicitudCarpeta(BaseModel):
-    ruta: str | None = None  # si es None se usa DIRECTORIO_FACTURAS del .env
+    # Relativa a DIRECTORIO_ENTRADA (o absoluta, pero dentro de él). Si es None se usa DIRECTORIO_FACTURAS.
+    ruta: str | None = None
     recursivo: bool = False
     usar_nlp: bool = True
 
@@ -248,8 +259,13 @@ def clasificar_archivo(
 
 @app.post("/carpeta/procesar", dependencies=[Autorizado])
 def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
+    """Solo carpetas dentro de DIRECTORIO_ENTRADA; fuera (incluso con "..") → 403."""
+    settings = get_settings()
+    entrada = settings.directorio_entrada
+    carpeta = carpeta_permitida(solicitud.ruta, entrada, settings.directorio_facturas)
     try:
-        return jsonable_encoder(procesar_carpeta(solicitud.ruta, solicitud.recursivo, solicitud.usar_nlp, catalogo))
+        resultados = procesar_carpeta(str(carpeta), solicitud.recursivo, solicitud.usar_nlp, catalogo, raiz=entrada)
+        return jsonable_encoder(resultados)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
 
