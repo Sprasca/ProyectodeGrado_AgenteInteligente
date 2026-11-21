@@ -11,6 +11,8 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg://agente:agente@localhost:5432/agente
+      # Solo para las pruebas de CI (no es un secreto real): la API no arranca sin JWT_SECRETO.
+      JWT_SECRETO: secreto-de-ci-solo-para-pruebas-0123456789abcdef
 
     services:
       db:
