@@ -10,11 +10,12 @@ from __future__ import annotations
 import csv
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from .enums import Naturaleza
-from .errors import CuentaNoExisteError
+from .errors import CatalogoInvalidoError, CuentaNoExisteError
 
 
 @dataclass(frozen=True)
@@ -97,10 +98,22 @@ class CatalogoPUC:
     }
 
     def __init__(self, cuentas: list[CuentaPUC], reglas: list[ReglaIngreso]) -> None:
+        repetidos = sorted(codigo for codigo, n in Counter(c.codigo for c in cuentas).items() if n > 1)
+        if repetidos:
+            raise CatalogoInvalidoError(
+                f"Códigos de cuenta repetidos en el catálogo: {', '.join(repetidos)}. "
+                "Cada código debe aparecer una sola vez en data/puc/cuentas_ventas.csv."
+            )
         self._cuentas = {c.codigo: c for c in cuentas}
         self._reglas = list(reglas)
         for r in self._reglas:
-            self.obtener(r.cuenta_ingreso)
+            cuenta = self.obtener(r.cuenta_ingreso)
+            if cuenta.clase != "4" or cuenta.naturaleza is not Naturaleza.CREDITO:
+                raise CatalogoInvalidoError(
+                    f"La regla {r.codigo} apunta a la cuenta {cuenta.codigo} ({cuenta.nombre}, "
+                    f"clase {cuenta.clase}, {cuenta.naturaleza}); una regla de ingreso debe apuntar "
+                    "a una cuenta de clase 4 con naturaleza CREDITO. Revise data/puc/reglas_ingreso.csv."
+                )
 
     @property
     def cuentas(self) -> tuple[CuentaPUC, ...]:
@@ -136,13 +149,21 @@ class CatalogoPUC:
             f"Actualice data/puc/cuentas_ventas.csv."
         )
 
+    # Ingresos por venta de bienes (agropecuario e industrias manufactureras / comercio).
+    _PREFIJOS_INGRESO_BIENES = ("4120", "4135")
+
     def cuenta_debito_venta(self, *, a_credito: bool, efectivo: bool, cuenta_ingreso: str | None = None) -> str:
-        """Elige la cuenta de débito según condición de pago y tipo de ingreso."""
+        """
+        Elige la cuenta de débito según condición de pago y tipo de ingreso.
+
+        A crédito: ingresos 4120 o 4135 → clientes por venta de bienes; cualquier otro
+        ingreso de clase 4 → clientes por prestación de servicios.
+        """
         if a_credito:
-            if cuenta_ingreso and cuenta_ingreso.startswith("421"):
-                return self.resolver("clientes_servicios")
-            if cuenta_ingreso and cuenta_ingreso.startswith("413"):
+            if cuenta_ingreso and cuenta_ingreso.startswith(self._PREFIJOS_INGRESO_BIENES):
                 return self.resolver("clientes_bienes")
+            if cuenta_ingreso and cuenta_ingreso.startswith("4"):
+                return self.resolver("clientes_servicios")
             return self.resolver("clientes")
         if efectivo:
             return self.resolver("caja")

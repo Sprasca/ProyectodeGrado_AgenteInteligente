@@ -5,6 +5,10 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 
+# De dónde sale el catálogo con el que se clasifica: la base de datos (lo que administra
+# el contador) o los CSV de data/puc (pruebas unitarias y demo sin base de datos).
+FUENTES_CATALOGO = ("bd", "csv")
+
 
 class Settings:
     def __init__(self) -> None:
@@ -26,6 +30,9 @@ class Settings:
         self.groq_api_key = obtener("GROQ_API_KEY", "")
         self.groq_modelo = obtener("GROQ_MODELO", "llama-3.3-70b-versatile")
         self.directorio_facturas = Path(obtener("DIRECTORIO_FACTURAS", str(RAIZ / "facturas")))
+        self.fuente_catalogo = obtener("FUENTE_CATALOGO", "bd").strip().lower()
+        if self.fuente_catalogo not in FUENTES_CATALOGO:
+            raise ValueError(f"FUENTE_CATALOGO debe ser 'bd' o 'csv', no {self.fuente_catalogo!r}.")
 
 
 @lru_cache

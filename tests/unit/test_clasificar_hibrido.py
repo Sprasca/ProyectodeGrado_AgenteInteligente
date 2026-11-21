@@ -11,7 +11,7 @@ from agente.infrastructure.llm.groq_cliente import ErrorGroq, SugerenciaCuenta
 
 UMBRAL = Decimal("0.80")
 SIN_REGLA = "Servicio de grúa"  # ninguna palabra clave del catálogo actual
-AMBIGUA = "Venta de servicio de transporte"
+AMBIGUA = "Alquiler de transporte"  # empata 4145 y 4155
 
 
 @pytest.fixture(autouse=True)
@@ -36,25 +36,25 @@ def _con_sugerencia(monkeypatch, respuesta):
 
 
 def test_sugerencia_con_confianza_suficiente_clasifica_la_linea(monkeypatch, catalogo):
-    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="421508", confianza=0.95, justificacion="grúa"))
+    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="4145", confianza=0.95, justificacion="grúa"))
     r = modulo.clasificar_hibrido(factura(descripciones=(SIN_REGLA,)), catalogo, UMBRAL)
 
     assert llamadas == [SIN_REGLA]
     assert r.estado is EstadoTransaccion.APROBADA_AUTOMATICA
     assert r.asiento is not None
-    assert "R-NLP-421508" in r.reglas_aplicadas
+    assert "R-NLP-4145" in r.reglas_aplicadas
     assert r.lineas[0].estado is EstadoLinea.CLASIFICADA
-    assert r.lineas[0].cuenta_ingreso == "421508"
+    assert r.lineas[0].cuenta_ingreso == "4145"
 
 
 def test_sugerencia_igual_al_umbral_clasifica(monkeypatch, catalogo):
-    _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="421508", confianza=0.80))
+    _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="4145", confianza=0.80))
     r = modulo.clasificar_hibrido(factura(descripciones=(SIN_REGLA,)), catalogo, UMBRAL)
     assert r.lineas[0].estado is EstadoLinea.CLASIFICADA
 
 
 def test_sugerencia_bajo_el_umbral_queda_en_alerta(monkeypatch, catalogo):
-    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="421508", confianza=0.5))
+    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="4145", confianza=0.5))
     r = modulo.clasificar_hibrido(factura(descripciones=(SIN_REGLA,)), catalogo, UMBRAL)
 
     assert llamadas == [SIN_REGLA]
@@ -81,7 +81,7 @@ def test_sugerencia_none_queda_en_alerta(monkeypatch, catalogo):
 
 
 def test_lineas_ambiguas_no_llaman_a_sugerir_cuenta(monkeypatch, catalogo):
-    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="421505", confianza=0.99))
+    llamadas = _con_sugerencia(monkeypatch, SugerenciaCuenta(cuenta="4145", confianza=0.99))
     r = modulo.clasificar_hibrido(factura(descripciones=(AMBIGUA,)), catalogo, UMBRAL)
 
     assert llamadas == []

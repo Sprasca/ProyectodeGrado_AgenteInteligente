@@ -3,7 +3,20 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func, text
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -33,6 +46,29 @@ class ReglaClasificacionModel(Base):
     activa: Mapped[bool] = mapped_column(Boolean, default=True)
     # Se llena en el Sprint 2 (RAG sobre el PUC)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class HistorialReglaModel(Base):
+    """Un cambio de una regla (RF09): quién, cuándo, qué acción y el antes/después."""
+
+    __tablename__ = "historial_regla"
+    __table_args__ = (
+        CheckConstraint(
+            "accion IN ('CREAR', 'EDITAR', 'ACTIVAR', 'DESACTIVAR')", name="ck_historial_regla_accion"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    regla_codigo: Mapped[str] = mapped_column(
+        ForeignKey("regla_clasificacion.codigo", name="fk_historial_regla_codigo"), index=True
+    )
+    accion: Mapped[str] = mapped_column(String(12))
+    antes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    despues: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usuario: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TransaccionModel(Base):

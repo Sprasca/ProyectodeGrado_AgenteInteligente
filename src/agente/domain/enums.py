@@ -13,6 +13,15 @@ class CondicionPago(StrEnum):
     CREDITO = "CREDITO"
 
 
+class AccionHistorial(StrEnum):
+    """Cambios de una regla que quedan en historial_regla."""
+
+    CREAR = "CREAR"
+    EDITAR = "EDITAR"
+    ACTIVAR = "ACTIVAR"
+    DESACTIVAR = "DESACTIVAR"
+
+
 class EstadoLinea(StrEnum):
     """Resultado del emparejamiento de una línea de la factura contra las reglas."""
 
