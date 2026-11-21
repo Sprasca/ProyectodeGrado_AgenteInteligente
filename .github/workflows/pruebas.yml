@@ -1,0 +1,58 @@
+name: Pruebas
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      DATABASE_URL: postgresql+psycopg://agente:agente@localhost:5432/agente
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agente
+          POSTGRES_PASSWORD: agente
+          POSTGRES_DB: agente
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agente -d agente"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Instalar dependencias
+        run: uv sync
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pruebas unitarias
+        run: uv run pytest
+
+      - name: Migrar la base
+        run: uv run alembic upgrade head
+
+      - name: Sembrar el catálogo PUC
+        run: uv run python scripts/sembrar_puc.py
+
+      - name: Pruebas de integración
+        run: uv run pytest -m integracion
