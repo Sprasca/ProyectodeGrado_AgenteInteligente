@@ -9,19 +9,38 @@ from ..domain.enums import EstadoLinea
 from ..domain.factura import Factura
 from ..domain.puc import CatalogoPUC, ReglaIngreso, normalizar
 from ..domain.resultado import ResultadoClasificacion
+from ..infrastructure.db.repositorio import cargar_catalogo_bd
+from ..infrastructure.db.session import fabrica_compartida
 from ..infrastructure.dian.lector_carpeta import leer_carpeta
 from ..infrastructure.llm.groq_cliente import ErrorGroq, sugerir_cuenta
 
 
 @lru_cache
 def catalogo_por_defecto() -> CatalogoPUC:
-    """Catálogo desde los CSV de data/puc (no requiere base de datos para la demo)."""
-    return CatalogoPUC.desde_csv(get_settings().directorio_puc)
+    """
+    Catálogo con el que se clasifica, según FUENTE_CATALOGO:
+
+    - "bd" (por defecto): cuentas y reglas ACTIVAS desde PostgreSQL, que administra el
+      contador. Sin conexión lanza RepositorioNoDisponibleError (la API responde 503).
+    - "csv": data/puc/*.csv (pruebas unitarias y uso sin base de datos).
+
+    Queda en caché; invalidar_catalogo() la limpia cada vez que cambia una cuenta o regla.
+    Un error no se guarda en caché: la siguiente llamada vuelve a intentar.
+    """
+    settings = get_settings()
+    if settings.fuente_catalogo == "csv":
+        return CatalogoPUC.desde_csv(settings.directorio_puc)
+    return cargar_catalogo_bd(fabrica_compartida())
+
+
+def invalidar_catalogo() -> None:
+    """La siguiente clasificación vuelve a cargar el catálogo desde su fuente."""
+    catalogo_por_defecto.cache_clear()
 
 
 def recargar_catalogo() -> CatalogoPUC:
-    """Invalida la caché y vuelve a leer data/puc (tras actualización del contador)."""
-    catalogo_por_defecto.cache_clear()
+    """Invalida la caché y vuelve a cargar el catálogo (tras una actualización del contador)."""
+    invalidar_catalogo()
     return catalogo_por_defecto()
 
 
@@ -60,11 +79,17 @@ def clasificar_hibrido(
     return clasificar(factura, catalogo, umbral)
 
 
-def procesar_carpeta(carpeta: str | None = None, recursivo: bool = False, usar_nlp: bool = True) -> list[dict]:
+def procesar_carpeta(
+    carpeta: str | None = None,
+    recursivo: bool = False,
+    usar_nlp: bool = True,
+    catalogo: CatalogoPUC | None = None,
+) -> list[dict]:
     salida: list[dict] = []
     for item in leer_carpeta(carpeta, recursivo):
         if item.factura is None:
             salida.append({"archivo": item.ruta.name, "error": item.error})
         else:
-            salida.append({"archivo": item.ruta.name, "resultado": clasificar_hibrido(item.factura, usar_nlp=usar_nlp)})
+            resultado = clasificar_hibrido(item.factura, catalogo, usar_nlp=usar_nlp)
+            salida.append({"archivo": item.ruta.name, "resultado": resultado})
     return salida

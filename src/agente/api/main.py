@@ -2,7 +2,6 @@
 
 import uuid
 from decimal import Decimal
-from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +10,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, sessionmaker
 
 from ..application.clasificar_con_nlp import catalogo_por_defecto, clasificar_hibrido, procesar_carpeta
 from ..domain.asiento import Partida
@@ -23,7 +21,8 @@ from ..domain.errors import (
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
 )
-from ..infrastructure.db.session import crear_sessionmaker
+from ..domain.puc import CatalogoPUC
+from ..infrastructure.db.session import fabrica_compartida
 from ..infrastructure.db.transacciones import (
     CuentaNoSembradaError,
     RepositorioNoDisponibleError,
@@ -37,15 +36,17 @@ app = FastAPI(title="Agente inteligente PUC", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-@lru_cache
-def _fabrica_sesiones() -> sessionmaker[Session]:
-    # Sin tiempo de espera, una base caída deja la petición colgada en vez de responder 503.
-    return crear_sessionmaker(connect_timeout=5)
+def get_catalogo() -> CatalogoPUC:
+    """Catálogo según FUENTE_CATALOGO (en caché). Sin base de datos con "bd" → 503."""
+    return catalogo_por_defecto()
 
 
-def get_repositorio() -> RepositorioTransacciones:
+Catalogo = Annotated[CatalogoPUC, Depends(get_catalogo)]
+
+
+def get_repositorio(catalogo: Catalogo) -> RepositorioTransacciones:
     """Repositorio de transacciones. Las pruebas lo reemplazan con app.dependency_overrides."""
-    return RepositorioSQL(_fabrica_sesiones(), catalogo_por_defecto())
+    return RepositorioSQL(fabrica_compartida(), catalogo)
 
 
 Repositorio = Annotated[RepositorioTransacciones, Depends(get_repositorio)]
@@ -93,6 +94,7 @@ def salud() -> dict:
 def clasificar_archivo(
     archivo: Annotated[UploadFile, File()],
     repositorio: Repositorio,
+    catalogo: Catalogo,
     usar_nlp: bool = True,
     guardar: bool = True,
 ):
@@ -102,7 +104,7 @@ def clasificar_archivo(
         raise HTTPException(415, "Solo se aceptan archivos .xml o .pdf")
     try:
         factura = parsear_xml(contenido) if sufijo == ".xml" else factura_desde_pdf(contenido)
-        resultado = clasificar_hibrido(factura, usar_nlp=usar_nlp)
+        resultado = clasificar_hibrido(factura, catalogo, usar_nlp=usar_nlp)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -113,9 +115,9 @@ def clasificar_archivo(
 
 
 @app.post("/carpeta/procesar")
-def clasificar_carpeta(solicitud: SolicitudCarpeta):
+def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
     try:
-        return jsonable_encoder(procesar_carpeta(solicitud.ruta, solicitud.recursivo, solicitud.usar_nlp))
+        return jsonable_encoder(procesar_carpeta(solicitud.ruta, solicitud.recursivo, solicitud.usar_nlp, catalogo))
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
 
