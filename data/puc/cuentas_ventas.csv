@@ -34,7 +34,6 @@ codigo,nombre,naturaleza
 4170,OTRAS ACTIVIDADES DE SERVICIOS COMUNITARIOS SOCIALES Y PERSONALES,CREDITO
 4175,"DEVOLUCIONES, REBAJAS Y DESCUENTOS EN VENTA DE BIENES",DEBITO
 417505,Descuento obtenido condicionado al volumen (probable),DEBITO
-417505,Descuento por pronto pago (probable),DEBITO
 4215,SERVICIOS VARIOS,CREDITO
 421505,Servicio de transporte,CREDITO
 421508,Alquiler maquinaria y equipo,CREDITO
