@@ -10,11 +10,12 @@ from __future__ import annotations
 import csv
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from .enums import Naturaleza
-from .errors import CuentaNoExisteError
+from .errors import CatalogoInvalidoError, CuentaNoExisteError
 
 
 @dataclass(frozen=True)
@@ -97,10 +98,22 @@ class CatalogoPUC:
     }
 
     def __init__(self, cuentas: list[CuentaPUC], reglas: list[ReglaIngreso]) -> None:
+        repetidos = sorted(codigo for codigo, n in Counter(c.codigo for c in cuentas).items() if n > 1)
+        if repetidos:
+            raise CatalogoInvalidoError(
+                f"Códigos de cuenta repetidos en el catálogo: {', '.join(repetidos)}. "
+                "Cada código debe aparecer una sola vez en data/puc/cuentas_ventas.csv."
+            )
         self._cuentas = {c.codigo: c for c in cuentas}
         self._reglas = list(reglas)
         for r in self._reglas:
-            self.obtener(r.cuenta_ingreso)
+            cuenta = self.obtener(r.cuenta_ingreso)
+            if cuenta.clase != "4" or cuenta.naturaleza is not Naturaleza.CREDITO:
+                raise CatalogoInvalidoError(
+                    f"La regla {r.codigo} apunta a la cuenta {cuenta.codigo} ({cuenta.nombre}, "
+                    f"clase {cuenta.clase}, {cuenta.naturaleza}); una regla de ingreso debe apuntar "
+                    "a una cuenta de clase 4 con naturaleza CREDITO. Revise data/puc/reglas_ingreso.csv."
+                )
 
     @property
     def cuentas(self) -> tuple[CuentaPUC, ...]:

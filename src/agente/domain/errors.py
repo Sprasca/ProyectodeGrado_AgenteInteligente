@@ -10,6 +10,10 @@ class CuentaNoExisteError(ErrorDeDominio):
     """La cuenta no existe en el catálogo del PUC cargado."""
 
 
+class CatalogoInvalidoError(ErrorDeDominio):
+    """El catálogo de data/puc es inconsistente (códigos repetidos, reglas mal dirigidas)."""
+
+
 class FacturaDuplicadaError(ErrorDeDominio):
     """Ya existe una transacción registrada con ese número de factura."""
 
