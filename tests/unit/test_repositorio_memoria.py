@@ -27,3 +27,8 @@ def nuevo_numero():
 
 class TestRepositorioMemoria(ContratoRepositorio):
     pass
+
+
+@pytest.fixture
+def id_usuario():
+    return 7

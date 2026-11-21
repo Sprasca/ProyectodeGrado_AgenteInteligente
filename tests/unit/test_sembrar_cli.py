@@ -16,9 +16,11 @@ def script(monkeypatch):
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     llamadas: list[bool] = []
+    sincronizaciones: list[bool] = []
 
-    def sembrar_falso(_directorio, forzar=False):
+    def sembrar_falso(_directorio, forzar=False, sincronizar=False):
         llamadas.append(forzar)
+        sincronizaciones.append(sincronizar)
         return ResumenSiembra(
             cuentas_insertadas=2,
             cuentas_sobrescritas=1 if forzar else 0,
@@ -26,9 +28,11 @@ def script(monkeypatch):
             reglas_insertadas=1,
             reglas_sobrescritas=3 if forzar else 0,
             reglas_omitidas=4,
+            reglas_desactivadas=["R-VIEJA-1", "R-VIEJA-2"] if sincronizar else [],
         )
 
     monkeypatch.setattr(modulo, "sembrar_desde_csv", sembrar_falso)
+    modulo.sincronizaciones = sincronizaciones
     return modulo, llamadas
 
 
@@ -55,3 +59,18 @@ def test_opcion_desconocida_falla(script):
     modulo, _ = script
     with pytest.raises(SystemExit):
         modulo.main(["--borrar-todo"])
+
+
+def test_sin_sincronizar_no_desactiva_ni_lo_informa(script, capsys):
+    modulo, _ = script
+    modulo.main([])
+    assert modulo.sincronizaciones == [False]
+    assert "--sincronizar" not in capsys.readouterr().out
+
+
+def test_con_sincronizar_informa_las_reglas_desactivadas(script, capsys):
+    modulo, llamadas = script
+    modulo.main(["--sincronizar"])
+    assert (llamadas, modulo.sincronizaciones) == ([False], [True])
+    assert "Reglas desactivadas por --sincronizar (2): R-VIEJA-1, R-VIEJA-2." in capsys.readouterr().out
+

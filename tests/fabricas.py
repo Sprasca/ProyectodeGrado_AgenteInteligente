@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from agente.domain.asiento import AsientoContable, Partida
 from agente.domain.clasificador import clasificar
@@ -19,6 +20,7 @@ def factura(
     descripciones: tuple[str, ...] = ("Venta de mercancía varios productos",),
     condicion: CondicionPago = CondicionPago.CONTADO,
     medio: str | None = "10",
+    cufe: str | None = None,
 ) -> Factura:
     """Factura de venta con una línea de 100.000 por descripción e IVA del 19 %."""
     subtotal = VALOR_LINEA * len(descripciones)
@@ -42,6 +44,7 @@ def factura(
         base_gravable=subtotal,
         total_con_impuestos=subtotal + iva,
         total_a_pagar=subtotal + iva,
+        cufe=cufe,
     )
 
 
@@ -105,3 +108,28 @@ def partidas_correctas(catalogo: CatalogoPUC) -> list[Partida]:
         Partida("4135", Naturaleza.CREDITO, Decimal("100000.00"), "Ingreso corregido"),
         Partida(catalogo.cuenta_iva(), Naturaleza.CREDITO, Decimal("19000.00"), "IVA"),
     ]
+
+
+def resultado_con_cufe(catalogo: CatalogoPUC, numero: str, cufe: str) -> ResultadoClasificacion:
+    """APROBADA_AUTOMATICA con CUFE."""
+    return clasificar(factura(numero, cufe=cufe), catalogo, Decimal("0.80"))
+
+
+def cufe_unico() -> str:
+    """Un CUFE con la forma de los de la DIAN (SHA-384 en hexadecimal, 96 caracteres)."""
+    import hashlib
+    import uuid
+
+    return hashlib.sha384(uuid.uuid4().bytes).hexdigest()
+
+
+XML_BASE = (Path(__file__).resolve().parent / "fixtures" / "factura_comercio_contado.xml").read_text(encoding="utf-8")
+
+
+def xml_factura(numero: str = "FV-1001", cufe: str | None = None, descripcion: str | None = None) -> bytes:
+    """El XML de prueba con otro número, con CUFE (cbc:UUID) y, si se pide, otra descripción de línea."""
+    uuid_xml = f'<cbc:UUID schemeName="CUFE-SHA384">{cufe}</cbc:UUID>' if cufe else ""
+    xml = XML_BASE.replace("<cbc:ID>FV-1001</cbc:ID>", f"<cbc:ID>{numero}</cbc:ID>{uuid_xml}")
+    if descripcion is not None:
+        xml = xml.replace("Venta de mercancía varios productos", descripcion)
+    return xml.encode("utf-8")

@@ -10,7 +10,8 @@ import uuid
 import pytest
 from contrato_repositorio import ContratoRepositorio
 from fabricas import CUENTA_NO_SEMBRADA, catalogo_con_cuenta_no_sembrada
-from sqlalchemy import delete, func, select, text
+from limpieza_bd import borrar_transacciones
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -49,8 +50,8 @@ def nuevo_numero(fabrica_sesiones):
     contador = itertools.count(1)
     yield lambda: f"{prefijo}{next(contador)}"
     with fabrica_sesiones() as sesion, sesion.begin():
-        # Las partidas se borran en cascada (ON DELETE CASCADE).
-        sesion.execute(delete(TransaccionModel).where(TransaccionModel.numero_factura.like(f"{prefijo}%")))
+        # Partidas en cascada; eventos y documento se borran antes (no tienen cascada).
+        borrar_transacciones(sesion, TransaccionModel.numero_factura.like(f"{prefijo}%"))
 
 
 class _RepositorioRastreado(RepositorioSQL):
@@ -60,8 +61,8 @@ class _RepositorioRastreado(RepositorioSQL):
         super().__init__(*args, **kwargs)
         self.creados: list[uuid.UUID] = []
 
-    def guardar(self, resultado):
-        id_ = super().guardar(resultado)
+    def guardar(self, resultado, **opciones):
+        id_ = super().guardar(resultado, **opciones)
         self.creados.append(id_)
         return id_
 
@@ -80,7 +81,7 @@ def crear_repo(fabrica_sesiones, nuevo_numero):
     ids = [id_ for r in creados for id_ in r.creados]
     if ids:
         with fabrica_sesiones() as sesion, sesion.begin():
-            sesion.execute(delete(TransaccionModel).where(TransaccionModel.id.in_(ids)))
+            borrar_transacciones(sesion, TransaccionModel.id.in_(ids))
 
 
 @pytest.fixture
@@ -99,3 +100,11 @@ def repo_extendido(crear_repo, catalogo, fabrica_sesiones):
 
 class TestRepositorioSQL(ContratoRepositorio):
     pass
+
+
+@pytest.fixture
+def id_usuario(usuarios_bd):
+    """Un usuario real (los eventos lo referencian con llave foránea)."""
+    from agente.domain.enums import Rol
+
+    return usuarios_bd[Rol.CONTADOR].id

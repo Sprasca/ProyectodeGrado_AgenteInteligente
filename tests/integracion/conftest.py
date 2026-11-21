@@ -4,12 +4,20 @@ import random
 import uuid
 
 import pytest
+from autenticacion_pruebas import CONTRASENA
+from limpieza_bd import borrar_transacciones
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from agente.config import get_settings
-from agente.infrastructure.db.models import CuentaPUCModel, HistorialReglaModel, ReglaClasificacionModel
+from agente.infrastructure.db.models import (
+    CuentaPUCModel,
+    EventoTransaccionModel,
+    HistorialReglaModel,
+    ReglaClasificacionModel,
+    TransaccionModel,
+)
 from agente.infrastructure.db.session import crear_sessionmaker
 
 
@@ -82,3 +90,33 @@ def aislamiento(fabrica_bd):
     datos = Aislamiento(fabrica_bd)
     yield datos
     datos.limpiar()
+
+
+@pytest.fixture
+def usuarios_bd(fabrica_bd):
+    """Un usuario real por rol en PostgreSQL (nombres únicos); se borran al terminar la prueba."""
+    from agente.domain.enums import Rol
+    from agente.infrastructure.db.models import UsuarioModel
+    from agente.infrastructure.db.usuarios import RepositorioUsuariosSQL
+
+    repo = RepositorioUsuariosSQL(fabrica_bd)
+    sufijo = uuid.uuid4().hex[:8]
+    creados = {
+        rol: repo.crear(f"it-{rol.value.lower()}-{sufijo}", f"{rol.value.title()} de integración", CONTRASENA, rol)
+        for rol in Rol
+    }
+    yield creados
+    ids = [u.id for u in creados.values()]
+    with fabrica_bd() as sesion, sesion.begin():
+        # Primero las transacciones con eventos de estos usuarios (sus llaves foráneas no tienen cascada).
+        con_eventos = select(EventoTransaccionModel.transaccion_id).where(EventoTransaccionModel.usuario_id.in_(ids))
+        borrar_transacciones(sesion, TransaccionModel.id.in_(con_eventos))
+        sesion.execute(delete(UsuarioModel).where(UsuarioModel.id.in_(ids)))
+
+
+@pytest.fixture
+def como_bd(usuarios_bd):
+    """como_bd(Rol.CONTADOR) → encabezados con un token del usuario real de ese rol."""
+    from agente.api.autenticacion import crear_token
+
+    return lambda rol: {"Authorization": f"Bearer {crear_token(usuarios_bd[rol])}"}
