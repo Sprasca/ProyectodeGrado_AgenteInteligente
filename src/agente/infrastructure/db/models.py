@@ -11,9 +11,11 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    LargeBinary,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -76,6 +78,7 @@ class HistorialReglaModel(Base):
 
 class TransaccionModel(Base):
     __tablename__ = "transaccion"
+    __table_args__ = (UniqueConstraint("cufe", name="uq_transaccion_cufe"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     numero_factura: Mapped[str] = mapped_column(String(60), unique=True)
@@ -90,6 +93,8 @@ class TransaccionModel(Base):
     # Partidas que propuso el agente; se llena en la primera corrección del contador.
     asiento_propuesto: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     corregido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # CUFE de la DIAN (cbc:UUID). Único: la misma factura no se registra dos veces.
+    cufe: Mapped[str | None] = mapped_column(String(128), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
@@ -144,3 +149,19 @@ class EventoTransaccionModel(Base):
     motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
     antes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     despues: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class DocumentoModel(Base):
+    """El archivo original (XML o PDF) tal como se recibió, con su huella SHA-256."""
+
+    __tablename__ = "documento"
+    __table_args__ = (CheckConstraint("tipo IN ('XML', 'PDF')", name="ck_documento_tipo"),)
+
+    transaccion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("transaccion.id", name="fk_documento_transaccion"), primary_key=True
+    )
+    nombre_archivo: Mapped[str] = mapped_column(String(255))
+    tipo: Mapped[str] = mapped_column(String(3))
+    contenido: Mapped[bytes] = mapped_column(LargeBinary)
+    sha256: Mapped[str] = mapped_column(String(64))
+    recibido_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

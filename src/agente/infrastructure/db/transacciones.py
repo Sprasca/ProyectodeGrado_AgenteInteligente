@@ -15,7 +15,8 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
-from ...domain.enums import EstadoTransaccion, Naturaleza, TipoEvento
+from ...domain.documento import DocumentoOriginal
+from ...domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
 from ...domain.resultado import ResultadoClasificacion
@@ -26,7 +27,7 @@ from ...domain.transacciones import (
     validar_correccion,
     validar_rechazo,
 )
-from .models import CuentaPUCModel, EventoTransaccionModel, PartidaModel, TransaccionModel
+from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
 
 
 class RepositorioNoDisponibleError(Exception):
@@ -68,6 +69,7 @@ class TransaccionRegistrada:
     # Lo que propuso el agente antes de la corrección del contador (None si nunca se corrigió).
     asiento_propuesto: tuple[Partida, ...] | None = None
     corregido_en: datetime | None = None
+    cufe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,11 +87,21 @@ class EventoTransaccion:
 
 
 class RepositorioTransacciones(Protocol):
-    def guardar(self, resultado: ResultadoClasificacion, *, usuario_id: int | None = None) -> uuid.UUID:
+    def guardar(
+        self,
+        resultado: ResultadoClasificacion,
+        *,
+        usuario_id: int | None = None,
+        documento: DocumentoOriginal | None = None,
+    ) -> uuid.UUID:
         """
-        Registra el resultado con sus eventos RECIBIDA (de usuario_id) y CLASIFICADA (automático).
-        Lanza FacturaDuplicadaError si el número de factura ya existe.
+        Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id) y
+        CLASIFICADA (automático). FacturaDuplicadaError si el número o el CUFE ya existen.
         """
+        ...
+
+    def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
+        """El archivo original, o None si no se guardó. TransaccionNoEncontradaError si no existe."""
         ...
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None: ...
@@ -164,16 +176,31 @@ def partidas_desde_json(datos: Sequence[dict[str, str]]) -> tuple[Partida, ...]:
     )
 
 
-def datos_recepcion(resultado: ResultadoClasificacion) -> dict[str, Any]:
-    """Lo que se recibió: identificación de la factura."""
+def datos_recepcion(resultado: ResultadoClasificacion, documento: DocumentoOriginal | None = None) -> dict[str, Any]:
+    """Lo que se recibió: identificación de la factura y huella del archivo original."""
     factura = resultado.factura
-    return {
+    datos: dict[str, Any] = {
         "numero_factura": factura.numero,
+        "cufe": factura.cufe,
         "fecha": factura.fecha.isoformat(),
         "nit_emisor": factura.emisor.nit,
         "nit_adquirente": factura.adquirente.nit,
         "valor_total": str(factura.total_a_pagar),
     }
+    if documento is not None:
+        datos["documento"] = {
+            "nombre_archivo": documento.nombre_archivo,
+            "tipo": documento.tipo.value,
+            "bytes": len(documento.contenido),
+            "sha256": documento.sha256,
+        }
+    return datos
+
+
+def factura_duplicada(numero: str, cufe: str | None = None) -> FacturaDuplicadaError:
+    if cufe is not None:
+        return FacturaDuplicadaError(f"La factura con CUFE {cufe} ya fue registrada.")
+    return FacturaDuplicadaError(f"La factura {numero} ya fue registrada.")
 
 
 def datos_clasificacion(resultado: ResultadoClasificacion) -> dict[str, Any]:
@@ -243,6 +270,7 @@ def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
         creado_en=t.creado_en,
         asiento_propuesto=partidas_desde_json(t.asiento_propuesto) if t.asiento_propuesto is not None else None,
         corregido_en=t.corregido_en,
+        cufe=t.cufe,
     )
 
 
@@ -278,9 +306,15 @@ class RepositorioSQL:
             raise TransaccionNoEncontradaError(f"No existe la transacción {id_transaccion}.")
         return t
 
-    def guardar(self, resultado: ResultadoClasificacion, *, usuario_id: int | None = None) -> uuid.UUID:
+    def guardar(
+        self,
+        resultado: ResultadoClasificacion,
+        *,
+        usuario_id: int | None = None,
+        documento: DocumentoOriginal | None = None,
+    ) -> uuid.UUID:
         factura = resultado.factura
-        duplicada = FacturaDuplicadaError(f"La factura {factura.numero} ya fue registrada.")
+        duplicada = factura_duplicada(factura.numero)
         try:
             with self._transaccion() as sesion:
                 existe = sesion.scalar(
@@ -288,6 +322,10 @@ class RepositorioSQL:
                 )
                 if existe is not None:
                     raise duplicada
+                if factura.cufe is not None and sesion.scalar(
+                    select(TransaccionModel.id).where(TransaccionModel.cufe == factura.cufe)
+                ):
+                    raise factura_duplicada(factura.numero, factura.cufe)
                 t = TransaccionModel(
                     id=uuid.uuid4(),
                     numero_factura=factura.numero,
@@ -299,19 +337,35 @@ class RepositorioSQL:
                     reglas_aplicadas=list(resultado.reglas_aplicadas),
                     motivos_alerta=list(resultado.motivos_alerta),
                     detalle_lineas=detalle_lineas(resultado),
+                    cufe=factura.cufe,
                 )
                 if resultado.asiento is not None:
                     t.partidas = [_partida_modelo(p) for p in resultado.asiento.partidas]
                 sesion.add(t)
                 sesion.flush()
                 # En la MISMA transacción que la factura: o queda todo, o no queda nada.
-                sesion.add(_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=datos_recepcion(resultado)))
+                if documento is not None:
+                    sesion.add(
+                        DocumentoModel(
+                            transaccion_id=t.id,
+                            nombre_archivo=documento.nombre_archivo,
+                            tipo=documento.tipo.value,
+                            contenido=documento.contenido,
+                            sha256=documento.sha256,
+                            recibido_en=datetime.now(UTC),
+                        )
+                    )
+                recepcion = datos_recepcion(resultado, documento)
+                sesion.add(_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
                 sesion.add(_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()
                 return t.id
         except IntegrityError as exc:
             # Carrera entre dos guardados de la misma factura: la restricción UNIQUE decide.
             if _sqlstate(exc) == _VIOLACION_UNICA:
+                restriccion = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+                if restriccion == "uq_transaccion_cufe":
+                    raise factura_duplicada(factura.numero, factura.cufe) from exc
                 raise duplicada from exc
             partidas = resultado.asiento.partidas if resultado.asiento is not None else ()
             self._traducir_llave_foranea(exc, partidas)
@@ -421,3 +475,12 @@ class RepositorioSQL:
                 .order_by(EventoTransaccionModel.fecha, EventoTransaccionModel.id)
             )
             return [_a_evento(f) for f in filas]
+
+    def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
+        with self._transaccion() as sesion:
+            if sesion.get(TransaccionModel, id_transaccion) is None:
+                raise TransaccionNoEncontradaError(f"No existe la transacción {id_transaccion}.")
+            fila = sesion.get(DocumentoModel, id_transaccion)
+            if fila is None:
+                return None
+            return DocumentoOriginal(fila.nombre_archivo, TipoDocumento(fila.tipo), fila.contenido, fila.recibido_en)

@@ -5,11 +5,12 @@ from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 
@@ -21,7 +22,8 @@ from ..application.clasificar_con_nlp import (
 )
 from ..config import get_settings
 from ..domain.asiento import Partida
-from ..domain.enums import EstadoTransaccion, Naturaleza, Rol
+from ..domain.documento import DocumentoOriginal
+from ..domain.enums import EstadoTransaccion, Naturaleza, Rol, TipoDocumento
 from ..domain.errors import (
     AsientoInvalidoError,
     ConflictoReglaError,
@@ -238,7 +240,9 @@ def clasificar_archivo(
 
     respuesta = jsonable_encoder(resultado)
     if guardar:
-        respuesta["id"] = str(repositorio.guardar(resultado, usuario_id=usuario.id))
+        tipo = TipoDocumento.XML if sufijo == ".xml" else TipoDocumento.PDF
+        documento = DocumentoOriginal.recibido(archivo.filename, tipo, contenido)
+        respuesta["id"] = str(repositorio.guardar(resultado, usuario_id=usuario.id, documento=documento))
     return respuesta
 
 
@@ -261,6 +265,28 @@ def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     if transaccion is None:
         raise HTTPException(404, f"No existe la transacción {id_transaccion}.")
     return jsonable_encoder(transaccion)
+
+
+_TIPO_MIME = {TipoDocumento.XML: "application/xml", TipoDocumento.PDF: "application/pdf"}
+
+
+@app.get("/transacciones/{id_transaccion}/documento", dependencies=[Autorizado])
+def documento_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio) -> Response:
+    """El archivo original tal como se recibió. Su SHA-256 va en la cabecera X-Contenido-SHA256."""
+    documento = repositorio.documento(id_transaccion)
+    if documento is None:
+        raise HTTPException(404, f"La transacción {id_transaccion} no tiene documento original guardado.")
+    ascii_seguro = documento.nombre_archivo.encode("ascii", "ignore").decode().replace('"', "") or "documento"
+    disposicion = f'attachment; filename="{ascii_seguro}"; filename*=UTF-8\'\'{quote(documento.nombre_archivo)}'
+    return Response(
+        content=documento.contenido,
+        media_type=_TIPO_MIME[documento.tipo],
+        headers={
+            "Content-Disposition": disposicion,
+            "X-Contenido-SHA256": documento.sha256,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/transacciones/{id_transaccion}/eventos", dependencies=[Autorizado])

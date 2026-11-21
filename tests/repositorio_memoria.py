@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from itertools import count
 
 from agente.domain.asiento import Partida
+from agente.domain.documento import DocumentoOriginal
 from agente.domain.enums import EstadoTransaccion, TipoEvento
-from agente.domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
+from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
 from agente.domain.resultado import ResultadoClasificacion
 from agente.domain.transacciones import (
@@ -26,6 +27,7 @@ from agente.infrastructure.db.transacciones import (
     datos_recepcion,
     detalle_lineas,
     estado_y_partidas,
+    factura_duplicada,
 )
 
 
@@ -36,6 +38,7 @@ class RepositorioMemoria:
         self._cuentas_en_bd = cuentas_en_bd if cuentas_en_bd is not None else {c.codigo for c in catalogo.cuentas}
         self._por_id: dict[uuid.UUID, TransaccionRegistrada] = {}
         self._eventos: list[EventoTransaccion] = []
+        self._documentos: dict[uuid.UUID, DocumentoOriginal] = {}
         self._ids_evento = count(1)
 
     def _verificar_llave_foranea(self, partidas: Sequence[Partida]) -> None:
@@ -50,10 +53,18 @@ class RepositorioMemoria:
             )
         )
 
-    def guardar(self, resultado: ResultadoClasificacion, *, usuario_id: int | None = None) -> uuid.UUID:
+    def guardar(
+        self,
+        resultado: ResultadoClasificacion,
+        *,
+        usuario_id: int | None = None,
+        documento: DocumentoOriginal | None = None,
+    ) -> uuid.UUID:
         factura = resultado.factura
         if any(t.numero_factura == factura.numero for t in self._por_id.values()):
-            raise FacturaDuplicadaError(f"La factura {factura.numero} ya fue registrada.")
+            raise factura_duplicada(factura.numero)
+        if factura.cufe is not None and any(t.cufe == factura.cufe for t in self._por_id.values()):
+            raise factura_duplicada(factura.numero, factura.cufe)
         if resultado.asiento is not None:
             self._verificar_llave_foranea(resultado.asiento.partidas)
         registro = TransaccionRegistrada(
@@ -69,9 +80,13 @@ class RepositorioMemoria:
             detalle_lineas=tuple(detalle_lineas(resultado)),
             partidas=resultado.asiento.partidas if resultado.asiento is not None else (),
             creado_en=datetime.now(UTC),
+            cufe=factura.cufe,
         )
         self._por_id[registro.id] = registro
-        self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=datos_recepcion(resultado))
+        if documento is not None:
+            self._documentos[registro.id] = replace(documento, recibido_en=datetime.now(UTC))
+        recepcion = datos_recepcion(resultado, documento)
+        self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion)
         self._registrar(registro.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado))
         return registro.id
 
@@ -153,3 +168,7 @@ class RepositorioMemoria:
     def eventos(self, id_transaccion: uuid.UUID) -> list[EventoTransaccion]:
         self._cargar(id_transaccion)
         return [e for e in self._eventos if e.transaccion_id == id_transaccion]
+
+    def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
+        self._cargar(id_transaccion)
+        return self._documentos.get(id_transaccion)

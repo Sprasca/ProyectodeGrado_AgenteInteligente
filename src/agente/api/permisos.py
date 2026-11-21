@@ -40,6 +40,7 @@ PERMISO_POR_RUTA: dict[tuple[str, str], Permiso] = {
     ("GET", "/transacciones"): Permiso.LEER,
     ("GET", "/transacciones/{id_transaccion}"): Permiso.LEER,
     ("GET", "/transacciones/{id_transaccion}/eventos"): Permiso.LEER,
+    ("GET", "/transacciones/{id_transaccion}/documento"): Permiso.LEER,
     ("POST", "/transacciones/{id_transaccion}/aprobar"): Permiso.RESOLVER_TRANSACCIONES,
     ("POST", "/transacciones/{id_transaccion}/corregir"): Permiso.RESOLVER_TRANSACCIONES,
     ("POST", "/transacciones/{id_transaccion}/rechazar"): Permiso.RESOLVER_TRANSACCIONES,

@@ -119,6 +119,8 @@ def parsear_xml(contenido: str | bytes) -> Factura:
     inv = _extraer_invoice(raiz)
 
     numero = _texto(inv, "cbc:ID") or numero_provisional()
+    # CUFE: cbc:UUID del Invoice (también cuando viene embebido en un AttachedDocument).
+    cufe = _texto(inv, "cbc:UUID") or None
     tipo_documento = _texto(inv, "cbc:InvoiceTypeCode", "01") or "01"
     moneda = _texto(inv, "cbc:DocumentCurrencyCode", "COP") or "COP"
     fecha = _fecha(inv, "cbc:IssueDate")
@@ -211,4 +213,5 @@ def parsear_xml(contenido: str | bytes) -> Factura:
         total_con_impuestos=total_con_imp,
         total_a_pagar=total_pagar,
         extras={"origen": "xml", "completo": "true"},
+        cufe=cufe,
     )

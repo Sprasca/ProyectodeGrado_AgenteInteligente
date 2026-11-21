@@ -61,3 +61,8 @@ class TipoEvento(StrEnum):
     APROBADA = "APROBADA"
     CORREGIDA = "CORREGIDA"
     RECHAZADA = "RECHAZADA"
+
+
+class TipoDocumento(StrEnum):
+    XML = "XML"
+    PDF = "PDF"
