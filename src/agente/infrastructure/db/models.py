@@ -119,3 +119,28 @@ class UsuarioModel(Base):
     rol: Mapped[str] = mapped_column(String(10))
     activo: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EventoTransaccionModel(Base):
+    """Un hecho en la vida de una transacción: quién, cuándo, por qué y el antes/después (no repudio)."""
+
+    __tablename__ = "evento_transaccion"
+    __table_args__ = (
+        CheckConstraint(
+            "tipo IN ('RECIBIDA', 'CLASIFICADA', 'APROBADA', 'CORREGIDA', 'RECHAZADA')",
+            name="ck_evento_transaccion_tipo",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transaccion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("transaccion.id", name="fk_evento_transaccion_transaccion"), index=True
+    )
+    tipo: Mapped[str] = mapped_column(String(12))
+    usuario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", name="fk_evento_transaccion_usuario"), nullable=True
+    )
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    antes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    despues: Mapped[dict | None] = mapped_column(JSON, nullable=True)

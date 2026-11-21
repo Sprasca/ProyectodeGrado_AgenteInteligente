@@ -48,7 +48,7 @@ from ..infrastructure.db.transacciones import (
 from ..infrastructure.dian.lector_pdf import factura_desde_pdf
 from ..infrastructure.dian.parser import parsear_xml
 from .autenticacion import RepoUsuarios, crear_token, validar_secreto
-from .permisos import autorizar
+from .permisos import UsuarioAutorizado, autorizar
 
 # Sin JWT_SECRETO (o con uno demasiado corto) la API no arranca.
 validar_secreto(get_settings())
@@ -204,9 +204,10 @@ def emitir_token(formulario: Annotated[OAuth2PasswordRequestForm, Depends()], us
     return {"access_token": crear_token(usuario), "token_type": "bearer", "expires_in": minutos * 60}
 
 
-@app.post("/facturas/clasificar", dependencies=[Autorizado])
+@app.post("/facturas/clasificar")
 def clasificar_archivo(
     archivo: Annotated[UploadFile, File()],
+    usuario: UsuarioAutorizado,
     repositorio: Repositorio,
     catalogo: Catalogo,
     usar_nlp: bool = True,
@@ -224,7 +225,7 @@ def clasificar_archivo(
 
     respuesta = jsonable_encoder(resultado)
     if guardar:
-        respuesta["id"] = str(repositorio.guardar(resultado))
+        respuesta["id"] = str(repositorio.guardar(resultado, usuario_id=usuario.id))
     return respuesta
 
 
@@ -249,15 +250,23 @@ def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     return jsonable_encoder(transaccion)
 
 
-@app.post("/transacciones/{id_transaccion}/aprobar", dependencies=[Autorizado])
-def aprobar_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
-    return jsonable_encoder(repositorio.aprobar(id_transaccion))
+@app.get("/transacciones/{id_transaccion}/eventos", dependencies=[Autorizado])
+def eventos_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
+    """Trazabilidad: quién hizo qué y cuándo, del evento más antiguo al más reciente."""
+    return jsonable_encoder(repositorio.eventos(id_transaccion))
 
 
-@app.post("/transacciones/{id_transaccion}/corregir", dependencies=[Autorizado])
-def corregir_transaccion(id_transaccion: uuid.UUID, solicitud: SolicitudCorreccion, repositorio: Repositorio):
+@app.post("/transacciones/{id_transaccion}/aprobar")
+def aprobar_transaccion(id_transaccion: uuid.UUID, usuario: UsuarioAutorizado, repositorio: Repositorio):
+    return jsonable_encoder(repositorio.aprobar(id_transaccion, usuario_id=usuario.id))
+
+
+@app.post("/transacciones/{id_transaccion}/corregir")
+def corregir_transaccion(
+    id_transaccion: uuid.UUID, solicitud: SolicitudCorreccion, usuario: UsuarioAutorizado, repositorio: Repositorio
+):
     partidas = [Partida(p.cuenta, p.naturaleza, p.valor, p.descripcion) for p in solicitud.partidas]
-    return jsonable_encoder(repositorio.corregir(id_transaccion, partidas))
+    return jsonable_encoder(repositorio.corregir(id_transaccion, partidas, usuario_id=usuario.id))
 
 
 # --- Catálogo administrado por el contador (RF09) ------------------------------------------
@@ -287,32 +296,39 @@ def obtener_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(regla)
 
 
-@app.post("/reglas", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
-def crear_regla(regla: ReglaEntrada, repositorio: RepoCatalogo, confirmar: bool = False):
+@app.post("/reglas", status_code=status.HTTP_201_CREATED)
+def crear_regla(regla: ReglaEntrada, usuario: UsuarioAutorizado, repositorio: RepoCatalogo, confirmar: bool = False):
     """Errores → 422. Advertencias de conflicto sin confirmar=true → 409 (no guarda)."""
     nueva = ReglaIngreso(regla.codigo, regla.cuenta_ingreso, tuple(regla.palabras_clave), regla.descripcion)
-    return _regla_respuesta(repositorio.crear_regla(nueva, confirmar=confirmar))
+    return _regla_respuesta(repositorio.crear_regla(nueva, confirmar=confirmar, usuario=usuario.nombre_usuario))
 
 
-@app.put("/reglas/{codigo}", dependencies=[Autorizado])
-def editar_regla(codigo: str, regla: ReglaEdicion, repositorio: RepoCatalogo, confirmar: bool = False):
+@app.put("/reglas/{codigo}")
+def editar_regla(
+    codigo: str, regla: ReglaEdicion, usuario: UsuarioAutorizado, repositorio: RepoCatalogo, confirmar: bool = False
+):
     """Como POST /reglas. El código de una regla no se puede cambiar."""
     if regla.codigo is not None and regla.codigo.strip() != codigo:
         raise HTTPException(422, "El código de una regla no se puede cambiar.")
     guardada = repositorio.editar_regla(
-        codigo, regla.cuenta_ingreso, regla.palabras_clave, regla.descripcion, confirmar=confirmar
+        codigo,
+        regla.cuenta_ingreso,
+        regla.palabras_clave,
+        regla.descripcion,
+        confirmar=confirmar,
+        usuario=usuario.nombre_usuario,
     )
     return _regla_respuesta(guardada)
 
 
-@app.post("/reglas/{codigo}/activar", dependencies=[Autorizado])
-def activar_regla(codigo: str, repositorio: RepoCatalogo):
-    return jsonable_encoder(repositorio.activar_regla(codigo))
+@app.post("/reglas/{codigo}/activar")
+def activar_regla(codigo: str, usuario: UsuarioAutorizado, repositorio: RepoCatalogo):
+    return jsonable_encoder(repositorio.activar_regla(codigo, usuario=usuario.nombre_usuario))
 
 
-@app.post("/reglas/{codigo}/desactivar", dependencies=[Autorizado])
-def desactivar_regla(codigo: str, repositorio: RepoCatalogo):
-    return jsonable_encoder(repositorio.desactivar_regla(codigo))
+@app.post("/reglas/{codigo}/desactivar")
+def desactivar_regla(codigo: str, usuario: UsuarioAutorizado, repositorio: RepoCatalogo):
+    return jsonable_encoder(repositorio.desactivar_regla(codigo, usuario=usuario.nombre_usuario))
 
 
 @app.get("/reglas/{codigo}/historial", dependencies=[Autorizado])

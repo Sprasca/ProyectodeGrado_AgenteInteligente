@@ -50,3 +50,13 @@ class Rol(StrEnum):
     CONTADOR = "CONTADOR"
     AUXILIAR = "AUXILIAR"
     ADMIN = "ADMIN"
+
+
+class TipoEvento(StrEnum):
+    """Hechos que quedan en evento_transaccion."""
+
+    RECIBIDA = "RECIBIDA"
+    CLASIFICADA = "CLASIFICADA"
+    APROBADA = "APROBADA"
+    CORREGIDA = "CORREGIDA"
+    RECHAZADA = "RECHAZADA"
