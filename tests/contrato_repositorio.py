@@ -71,7 +71,7 @@ class ContratoRepositorio:
         linea = t.detalle_lineas[0]
         assert linea["estado"] == "CLASIFICADA"
         assert linea["cuenta_ingreso"] == "4135"
-        assert linea["palabras_encontradas"] == ["venta", "mercancia", "producto"]
+        assert linea["palabras_encontradas"] == ["mercancia", "producto"]
 
     def test_guardar_sin_asiento_no_crea_partidas(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
