@@ -1,33 +1,6 @@
 codigo_regla,cuenta_ingreso,palabras_clave,descripcion
-R-4135-COMERCIO,4135,venta|mercancia|producto|articulo|repuesto|licor|abarrote|combustible,Venta de bienes (Comercio al por mayor)
-R-421505-TRANSPORTE,421505,transporte|flete|envio|mensajeria|almacenamiento,Servicio de transporte
-R-421508-ALQUILER,421508,alquiler|maquinaria|equipo,Alquiler maquinaria y equipo
-R-449002-ARRIENDOS,449002,arriendo|arrendamiento|inmueble|local|oficina,Arriendos (Otros ingresos diversos)
-R-4215-SERVICIOS,4215,restaurante|almuerzo|comida|bebida|hospedaje|habitacion|asesoria empresarial|consultoria|peluqueria|lavanderia|mantenimiento|reparacion|servicio,Servicios varios (Venta de servicios)
-R-4175-DEVOLUCION,4175,devolucion|rebaja|nota credito|anulacion venta,"Devoluciones, rebajas y descuentos en venta de bienes"
-R-417505-DESC-PROBABLE,417505,descuento comercial|descuento pactado|descuento pronto pago probable|descuento volumen probable,Descuento por pronto pago o volumen probable (menor valor del ingreso)
-R-530530-DESC-FIN-PP,530530,descuento pronto pago no planeado|descuento financiero,Descuentos concedidos por pronto pago no planeados
-R-530535-DESC-FIN-VOL,530535,descuento volumen no planeado|bonificacion posterior,Descuentos concedidos condicionados al volumen no planeados
-R-24100501-IVA-BIENES,24100501,iva bienes|iva venta bienes|impuesto valor agregado bienes,Impuesto al valor agregado - Venta de bienes
-R-24100502-IVA-SERVICIOS,24100502,iva servicios|iva venta servicios|impuesto valor agregado servicios,Impuesto al valor agregado - Venta de servicios
-R-24100507-IVA-DEV-BIENES,24100507,iva devolucion bienes|devolucion iva bienes,Impuesto al valor agregado - Devoluciones en venta de bienes (DB)
-R-24100508-IVA-DEV-SERVICIOS,24100508,iva devolucion servicios|devolucion iva servicios,Impuesto al valor agregado - Devoluciones en venta de servicios (DB)
-R-170502-RETEFUENTE,170502,retefuente|retencion en la fuente|retencion renta,Retención en la fuente practicada por clientes
-R-171004-RETEIVA,171004,reteiva|iva retenido|impuesto ventas retenido,Impuesto a las ventas retenido
-R-171010-RETEICA,171010,reteica|ica retenido|industria y comercio retenido,Impuesto industria y comercio retenido
-R-24051010-AUTORRETENCION,24051010,autorretencion|autorretencion renta|autorretencion especial,Autorretenciones por pagar
-R-510802-GASTO-ICA,510802,impuesto industria y comercio|ica causado|gasto ica,Impuesto de industria y comercio operacional de venta
-R-110505-CAJA,110505,efectivo|caja general|contado efectivo,Caja general
-R-111005-CTA-CORRIENTE,111005,transferencia|pse|datafono|tarjeta|cuenta corriente|consignacion,Cuenta corriente
-R-111006-CTA-AHORRO,111006,cuenta ahorro|cuenta de ahorro,Cuenta de ahorro
-R-111011-EXTERIOR,111011,divisas|giro exterior|deposito exterior|moneda extranjera,Depósitos en el exterior
-R-130606-CXC-BIENES-NAC,130606,credito bienes|cartera bienes|cliente nacional bienes|factura credito mercancia,Cuentas por cobrar venta de bienes - Nacionales
-R-130607-CXC-BIENES-EXT,130607,exportacion bienes|cliente exterior bienes,Cuentas por cobrar venta de bienes - Del exterior
-R-130806-CXC-SERV-NAC,130806,credito servicios|cartera servicios|cliente nacional servicios,Cuentas por cobrar prestación de servicios - Nacionales
-R-130807-CXC-SERV-EXT,130807,exportacion servicios|cliente exterior servicios,Cuentas por cobrar prestación de servicios - Del exterior
-R-290505-ANTICIPO-CLIENTE,290505,anticipo cliente|abono previo|saldo a favor cliente,Anticipos y avances recibidos - De clientes
-R-290510-ANTICIPO-CONTRATO,290510,anticipo contrato|anticipo sobre contrato,Anticipos y avances recibidos - Sobre contratos
-R-613595-COSTO-VENTA,613595,costo de venta|costo mercancia vendida|costo producto vendido,Costo de ventas - Venta de otros productos
-R-143505-INV-MERCANCIA,143505,salida inventario|mercancia no fabricada|descarga mercancia,Mercancías no fabricadas por la empresa
-R-143005-INV-MANUFACTURA,143005,producto manufacturado|producto terminado|salida produccion,Productos manufacturados
-R-143010-INV-OTROS-PROD,143010,otros productos terminados,Otros productos
+R-4135-COMERCIO,4135,venta|mercancia|producto|articulo|repuesto|licor|abarrote,Venta de mercancías (comercio al por mayor y menor)
+R-4140-RESTAURANTE,4140,restaurante|almuerzo|comida|bebida|hospedaje|habitacion,Hoteles y restaurantes
+R-4145-TRANSPORTE,4145,transporte|flete|envio|mensajeria|almacenamiento,"Transporte, almacenamiento y comunicaciones"
+R-4155-ALQUILER,4155,alquiler|arriendo|asesoria empresarial|consultoria,Actividades empresariales y de alquiler
+R-4170-SERVICIOS,4170,peluqueria|lavanderia|mantenimiento|reparacion,Otros servicios personales
