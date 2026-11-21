@@ -198,7 +198,8 @@ class RepositorioCatalogoSQL:
 
     def listar_cuentas(self) -> list[CuentaPUC]:
         with self._transaccion() as sesion:
-            return [_a_cuenta(f) for f in sesion.scalars(select(CuentaPUCModel).order_by(CuentaPUCModel.codigo))]
+            consulta = select(CuentaPUCModel).order_by(CuentaPUCModel.codigo.collate("C"))
+            return [_a_cuenta(f) for f in sesion.scalars(consulta)]
 
     def crear_cuenta(self, codigo: str, nombre: str, naturaleza: Naturaleza) -> CuentaPUC:
         codigo, nombre = codigo.strip(), nombre.strip()
@@ -220,7 +221,8 @@ class RepositorioCatalogoSQL:
     # --- reglas -------------------------------------------------------------------------
 
     def listar_reglas(self, activa: bool | None = None) -> list[ReglaAdministrada]:
-        consulta = select(ReglaClasificacionModel).order_by(ReglaClasificacionModel.codigo)
+        # COLLATE "C": orden por código carácter a carácter, igual en cualquier configuración regional.
+        consulta = select(ReglaClasificacionModel).order_by(ReglaClasificacionModel.codigo.collate("C"))
         if activa is not None:
             consulta = consulta.where(ReglaClasificacionModel.activa.is_(activa))
         with self._transaccion() as sesion:
