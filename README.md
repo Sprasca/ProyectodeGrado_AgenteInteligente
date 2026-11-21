@@ -64,5 +64,8 @@ uv run pytest -m integracion     # integración contra PostgreSQL real (DATABASE
 ```
 Las pruebas de integración necesitan la base levantada, migrada y sembrada (ver *Puesta en marcha*). Si no hay conexión se saltan con un aviso.
 
+## Integración continua
+Cada push y pull request ejecuta [.github/workflows/pruebas.yml](.github/workflows/pruebas.yml) en GitHub Actions. El job levanta un servicio PostgreSQL (`pgvector/pgvector:pg16`, usuario, contraseña y base `agente`), define `DATABASE_URL` y corre: `uv sync`, `uv run ruff check .`, `uv run pytest`, `uv run alembic upgrade head`, `uv run python scripts/sembrar_puc.py` y `uv run pytest -m integracion`. Un cambio en `data/puc/` que deje el catálogo inconsistente (códigos repetidos o reglas que apunten a cuentas que no son de ingreso) hace fallar el job.
+
 ## Demo web
 `uv run python scripts/empaquetar_demo.py` regenera `docs/agente_demo.zip`, que `docs/index.html` ejecuta en el navegador con Pyodide (solo el motor de reglas).
