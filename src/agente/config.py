@@ -33,6 +33,12 @@ class Settings:
         self.fuente_catalogo = obtener("FUENTE_CATALOGO", "bd").strip().lower()
         if self.fuente_catalogo not in FUENTES_CATALOGO:
             raise ValueError(f"FUENTE_CATALOGO debe ser 'bd' o 'csv', no {self.fuente_catalogo!r}.")
+        # Firma de los tokens JWT. Sin él la API no arranca (ver agente.api.autenticacion).
+        self.jwt_secreto = obtener("JWT_SECRETO", "").strip()
+        minutos = obtener("JWT_MINUTOS", "60").strip()
+        if not minutos.isdigit() or int(minutos) <= 0:
+            raise ValueError(f"JWT_MINUTOS debe ser un número entero positivo, no {minutos!r}.")
+        self.jwt_minutos = int(minutos)
 
 
 @lru_cache

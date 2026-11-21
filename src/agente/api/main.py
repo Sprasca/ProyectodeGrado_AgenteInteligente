@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 
 from ..application.clasificar_con_nlp import (
@@ -18,6 +19,7 @@ from ..application.clasificar_con_nlp import (
     invalidar_catalogo,
     procesar_carpeta,
 )
+from ..config import get_settings
 from ..domain.asiento import Partida
 from ..domain.enums import EstadoTransaccion, Naturaleza
 from ..domain.errors import (
@@ -42,6 +44,13 @@ from ..infrastructure.db.transacciones import (
 )
 from ..infrastructure.dian.lector_pdf import factura_desde_pdf
 from ..infrastructure.dian.parser import parsear_xml
+from .autenticacion import RepoUsuarios, crear_token, usuario_actual, validar_secreto
+
+# Sin JWT_SECRETO (o con uno demasiado corto) la API no arranca.
+validar_secreto(get_settings())
+
+# Toda ruta exige un token válido, excepto /salud y /auth/token.
+Autenticado = Depends(usuario_actual)
 
 app = FastAPI(title="Agente inteligente PUC", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -156,7 +165,19 @@ def salud() -> dict:
     return {"estado": "ok"}
 
 
-@app.post("/facturas/clasificar")
+@app.post("/auth/token")
+def emitir_token(formulario: Annotated[OAuth2PasswordRequestForm, Depends()], usuarios: RepoUsuarios) -> dict:
+    """OAuth2 con contraseña (campos username y password). 401 si no coinciden o el usuario está inactivo."""
+    usuario = usuarios.autenticar(formulario.username, formulario.password)
+    if usuario is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Usuario o contraseña incorrectos.", headers={"WWW-Authenticate": "Bearer"}
+        )
+    minutos = get_settings().jwt_minutos
+    return {"access_token": crear_token(usuario), "token_type": "bearer", "expires_in": minutos * 60}
+
+
+@app.post("/facturas/clasificar", dependencies=[Autenticado])
 def clasificar_archivo(
     archivo: Annotated[UploadFile, File()],
     repositorio: Repositorio,
@@ -180,7 +201,7 @@ def clasificar_archivo(
     return respuesta
 
 
-@app.post("/carpeta/procesar")
+@app.post("/carpeta/procesar", dependencies=[Autenticado])
 def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
     try:
         return jsonable_encoder(procesar_carpeta(solicitud.ruta, solicitud.recursivo, solicitud.usar_nlp, catalogo))
@@ -188,12 +209,12 @@ def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
         raise HTTPException(404, str(exc)) from exc
 
 
-@app.get("/transacciones")
+@app.get("/transacciones", dependencies=[Autenticado])
 def listar_transacciones(repositorio: Repositorio, estado: EstadoTransaccion | None = None):
     return jsonable_encoder(repositorio.listar(estado))
 
 
-@app.get("/transacciones/{id_transaccion}")
+@app.get("/transacciones/{id_transaccion}", dependencies=[Autenticado])
 def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     transaccion = repositorio.obtener(id_transaccion)
     if transaccion is None:
@@ -201,12 +222,12 @@ def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     return jsonable_encoder(transaccion)
 
 
-@app.post("/transacciones/{id_transaccion}/aprobar")
+@app.post("/transacciones/{id_transaccion}/aprobar", dependencies=[Autenticado])
 def aprobar_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     return jsonable_encoder(repositorio.aprobar(id_transaccion))
 
 
-@app.post("/transacciones/{id_transaccion}/corregir")
+@app.post("/transacciones/{id_transaccion}/corregir", dependencies=[Autenticado])
 def corregir_transaccion(id_transaccion: uuid.UUID, solicitud: SolicitudCorreccion, repositorio: Repositorio):
     partidas = [Partida(p.cuenta, p.naturaleza, p.valor, p.descripcion) for p in solicitud.partidas]
     return jsonable_encoder(repositorio.corregir(id_transaccion, partidas))
@@ -215,23 +236,23 @@ def corregir_transaccion(id_transaccion: uuid.UUID, solicitud: SolicitudCorrecci
 # --- Catálogo administrado por el contador (RF09) ------------------------------------------
 
 
-@app.get("/catalogo/cuentas")
+@app.get("/catalogo/cuentas", dependencies=[Autenticado])
 def listar_cuentas(repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.listar_cuentas())
 
 
-@app.post("/catalogo/cuentas", status_code=status.HTTP_201_CREATED)
+@app.post("/catalogo/cuentas", status_code=status.HTTP_201_CREATED, dependencies=[Autenticado])
 def crear_cuenta(cuenta: CuentaEntrada, repositorio: RepoCatalogo):
     """Código repetido → 409. Datos inválidos → 422. Las cuentas no se borran."""
     return jsonable_encoder(repositorio.crear_cuenta(cuenta.codigo, cuenta.nombre, cuenta.naturaleza))
 
 
-@app.get("/reglas")
+@app.get("/reglas", dependencies=[Autenticado])
 def listar_reglas(repositorio: RepoCatalogo, activa: bool | None = None):
     return jsonable_encoder(repositorio.listar_reglas(activa))
 
 
-@app.get("/reglas/{codigo}")
+@app.get("/reglas/{codigo}", dependencies=[Autenticado])
 def obtener_regla(codigo: str, repositorio: RepoCatalogo):
     regla = repositorio.obtener_regla(codigo)
     if regla is None:
@@ -239,14 +260,14 @@ def obtener_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(regla)
 
 
-@app.post("/reglas", status_code=status.HTTP_201_CREATED)
+@app.post("/reglas", status_code=status.HTTP_201_CREATED, dependencies=[Autenticado])
 def crear_regla(regla: ReglaEntrada, repositorio: RepoCatalogo, confirmar: bool = False):
     """Errores → 422. Advertencias de conflicto sin confirmar=true → 409 (no guarda)."""
     nueva = ReglaIngreso(regla.codigo, regla.cuenta_ingreso, tuple(regla.palabras_clave), regla.descripcion)
     return _regla_respuesta(repositorio.crear_regla(nueva, confirmar=confirmar))
 
 
-@app.put("/reglas/{codigo}")
+@app.put("/reglas/{codigo}", dependencies=[Autenticado])
 def editar_regla(codigo: str, regla: ReglaEdicion, repositorio: RepoCatalogo, confirmar: bool = False):
     """Como POST /reglas. El código de una regla no se puede cambiar."""
     if regla.codigo is not None and regla.codigo.strip() != codigo:
@@ -257,16 +278,16 @@ def editar_regla(codigo: str, regla: ReglaEdicion, repositorio: RepoCatalogo, co
     return _regla_respuesta(guardada)
 
 
-@app.post("/reglas/{codigo}/activar")
+@app.post("/reglas/{codigo}/activar", dependencies=[Autenticado])
 def activar_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.activar_regla(codigo))
 
 
-@app.post("/reglas/{codigo}/desactivar")
+@app.post("/reglas/{codigo}/desactivar", dependencies=[Autenticado])
 def desactivar_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.desactivar_regla(codigo))
 
 
-@app.get("/reglas/{codigo}/historial")
+@app.get("/reglas/{codigo}/historial", dependencies=[Autenticado])
 def historial_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.historial(codigo))
