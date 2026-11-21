@@ -1,15 +1,20 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from ...domain.enums import Naturaleza
+from ...domain.enums import AccionHistorial, Naturaleza
 from ...domain.puc import CatalogoPUC, CuentaPUC, ReglaIngreso
+from .catalogo import instantanea, registrar_historial, regla_desde_fila
 from .models import CuentaPUCModel, ReglaClasificacionModel
 from .session import crear_sessionmaker
 from .transacciones import RepositorioNoDisponibleError
+
+# Autor de los cambios de reglas hechos por la siembra (historial_regla.usuario).
+USUARIO_SIEMBRA = "scripts/sembrar_puc.py"
 
 
 @dataclass
@@ -41,7 +46,8 @@ def sembrar_catalogo(sesion: Session, catalogo: CatalogoPUC, forzar: bool = Fals
     Sin forzar solo INSERTA lo que no existe: nunca toca lo que el contador editó en la base.
     Con forzar sobrescribe las existentes con lo de los CSV (nombre y naturaleza de la cuenta;
     cuenta, palabras clave y descripción de la regla). No cambia si una regla está activa.
-    Las filas iguales a los CSV cuentan como omitidas.
+    Las filas iguales a los CSV cuentan como omitidas. Cada regla insertada o sobrescrita
+    deja su fila en historial_regla (usuario "scripts/sembrar_puc.py").
     """
     resumen = ResumenSiembra()
 
@@ -63,18 +69,29 @@ def sembrar_catalogo(sesion: Session, catalogo: CatalogoPUC, forzar: bool = Fals
         fila = reglas.get(r.codigo)
         valores = (r.cuenta_ingreso, list(r.palabras_clave), r.descripcion)
         if fila is None:
-            sesion.add(
-                ReglaClasificacionModel(
-                    codigo=r.codigo,
-                    cuenta_codigo=r.cuenta_ingreso,
-                    palabras_clave=list(r.palabras_clave),
-                    descripcion=r.descripcion,
-                    activa=True,
-                )
+            ahora = datetime.now(UTC)
+            fila = ReglaClasificacionModel(
+                codigo=r.codigo,
+                cuenta_codigo=r.cuenta_ingreso,
+                palabras_clave=list(r.palabras_clave),
+                descripcion=r.descripcion,
+                activa=True,
+                creado_en=ahora,
+                actualizado_en=ahora,
+            )
+            sesion.add(fila)
+            sesion.flush()  # la fila de historial referencia la regla (llave foránea)
+            registrar_historial(
+                sesion, r.codigo, AccionHistorial.CREAR, None, instantanea(regla_desde_fila(fila)), USUARIO_SIEMBRA
             )
             resumen.reglas_insertadas += 1
         elif forzar and (fila.cuenta_codigo, list(fila.palabras_clave), fila.descripcion) != valores:
+            antes = instantanea(regla_desde_fila(fila))
             fila.cuenta_codigo, fila.palabras_clave, fila.descripcion = valores
+            fila.actualizado_en = datetime.now(UTC)
+            registrar_historial(
+                sesion, r.codigo, AccionHistorial.EDITAR, antes, instantanea(regla_desde_fila(fila)), USUARIO_SIEMBRA
+            )
             resumen.reglas_sobrescritas += 1
         else:
             resumen.reglas_omitidas += 1

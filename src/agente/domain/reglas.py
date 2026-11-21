@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .enums import Naturaleza
+from .errors import ConflictoReglaError, ReglaInvalidaError
 from .puc import CuentaPUC, ReglaIngreso, normalizar
 
 # Coincide con regla_clasificacion.codigo (String(60)).
@@ -109,3 +110,30 @@ def validar_regla(
         and palabra in otra.palabras_clave
     )
     return ValidacionRegla(normalizada, tuple(errores), advertencias)
+
+
+def exigir_guardable(validacion: ValidacionRegla, confirmar: bool) -> None:
+    """Errores → ReglaInvalidaError. Advertencias sin confirmar → ConflictoReglaError (no se guarda)."""
+    if validacion.errores:
+        raise ReglaInvalidaError(validacion.errores)
+    if validacion.advertencias and not confirmar:
+        raise ConflictoReglaError(validacion.advertencias)
+
+
+# Coinciden con cuenta_puc.codigo (String(10)) y cuenta_puc.nombre (String(200)).
+LONGITUD_MAXIMA_CODIGO_CUENTA = 10
+LONGITUD_MAXIMA_NOMBRE_CUENTA = 200
+
+
+def validar_cuenta(codigo: str, nombre: str) -> tuple[str, ...]:
+    """Errores de una cuenta nueva (el código repetido lo detecta el repositorio)."""
+    errores: list[str] = []
+    if not codigo.isdigit():
+        errores.append(f"El código de cuenta {codigo!r} debe tener solo dígitos.")
+    elif len(codigo) > LONGITUD_MAXIMA_CODIGO_CUENTA:
+        errores.append(f"El código de cuenta no puede tener más de {LONGITUD_MAXIMA_CODIGO_CUENTA} dígitos.")
+    if not nombre.strip():
+        errores.append("El nombre de la cuenta no puede estar vacío.")
+    elif len(nombre.strip()) > LONGITUD_MAXIMA_NOMBRE_CUENTA:
+        errores.append(f"El nombre de la cuenta no puede tener más de {LONGITUD_MAXIMA_NOMBRE_CUENTA} caracteres.")
+    return tuple(errores)
