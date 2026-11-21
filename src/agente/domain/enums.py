@@ -13,6 +13,13 @@ class CondicionPago(StrEnum):
     CREDITO = "CREDITO"
 
 
+class OrigenRegla(StrEnum):
+    """Quién creó la regla: la siembra desde data/puc o el contador desde la API."""
+
+    CSV = "csv"
+    CONTADOR = "contador"
+
+
 class AccionHistorial(StrEnum):
     """Cambios de una regla que quedan en historial_regla."""
 

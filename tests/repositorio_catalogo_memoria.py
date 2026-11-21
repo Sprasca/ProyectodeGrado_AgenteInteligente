@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import count
 
-from agente.domain.enums import AccionHistorial, Naturaleza
+from agente.domain.enums import AccionHistorial, Naturaleza, OrigenRegla
 from agente.domain.errors import CuentaDuplicadaError, CuentaInvalidaError, ReglaNoEncontradaError
 from agente.domain.puc import CatalogoPUC, CuentaPUC, ReglaIngreso
 from agente.domain.reglas import ReglaAdministrada, exigir_guardable, validar_cuenta, validar_regla
@@ -34,7 +34,8 @@ class RepositorioCatalogoMemoria:
     def desde_catalogo(cls, catalogo: CatalogoPUC, al_cambiar: Callable[[], None] | None = None):
         """Como una base recién sembrada con ese catálogo (todas las reglas activas, sin historial)."""
         reglas = [
-            ReglaAdministrada(r.codigo, r.cuenta_ingreso, r.palabras_clave, r.descripcion) for r in catalogo.reglas
+            ReglaAdministrada(r.codigo, r.cuenta_ingreso, r.palabras_clave, r.descripcion, origen=OrigenRegla.CSV)
+            for r in catalogo.reglas
         ]
         return cls(catalogo.cuentas, reglas, al_cambiar)
 
@@ -87,7 +88,14 @@ class RepositorioCatalogoMemoria:
         nueva = validacion.regla
         ahora = datetime.now(UTC)
         guardada = ReglaAdministrada(
-            nueva.codigo, nueva.cuenta_ingreso, nueva.palabras_clave, nueva.descripcion, True, ahora, ahora
+            nueva.codigo,
+            nueva.cuenta_ingreso,
+            nueva.palabras_clave,
+            nueva.descripcion,
+            True,
+            ahora,
+            ahora,
+            OrigenRegla.CONTADOR,
         )
         self._reglas[guardada.codigo] = guardada
         self._registrar(

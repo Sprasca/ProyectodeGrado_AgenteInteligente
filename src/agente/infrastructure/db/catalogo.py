@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from ...domain.enums import AccionHistorial, Naturaleza
+from ...domain.enums import AccionHistorial, Naturaleza, OrigenRegla
 from ...domain.errors import (
     CuentaDuplicadaError,
     CuentaInvalidaError,
@@ -119,6 +119,7 @@ def regla_desde_fila(fila: ReglaClasificacionModel) -> ReglaAdministrada:
         activa=fila.activa,
         creado_en=fila.creado_en,
         actualizado_en=fila.actualizado_en,
+        origen=OrigenRegla(fila.origen),
     )
 
 
@@ -250,6 +251,7 @@ class RepositorioCatalogoSQL:
                     activa=True,
                     creado_en=ahora,
                     actualizado_en=ahora,
+                    origen=OrigenRegla.CONTADOR.value,
                 )
                 sesion.add(fila)
                 sesion.flush()

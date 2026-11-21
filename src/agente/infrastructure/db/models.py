@@ -37,6 +37,7 @@ class CuentaPUCModel(Base):
 
 class ReglaClasificacionModel(Base):
     __tablename__ = "regla_clasificacion"
+    __table_args__ = (CheckConstraint("origen IN ('csv', 'contador')", name="ck_regla_clasificacion_origen"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     codigo: Mapped[str] = mapped_column(String(60), unique=True)
@@ -48,6 +49,8 @@ class ReglaClasificacionModel(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # "csv": la creó sembrar_puc.py desde data/puc; "contador": la creó el contador por la API.
+    origen: Mapped[str] = mapped_column(String(10), server_default=text("'csv'"))
 
 
 class HistorialReglaModel(Base):
