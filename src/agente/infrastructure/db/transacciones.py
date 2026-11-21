@@ -19,7 +19,13 @@ from ...domain.enums import EstadoTransaccion, Naturaleza, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
 from ...domain.resultado import ResultadoClasificacion
-from ...domain.transacciones import validar_aprobacion, validar_correccion
+from ...domain.transacciones import (
+    exigir_motivo,
+    motivo_opcional,
+    validar_aprobacion,
+    validar_correccion,
+    validar_rechazo,
+)
 from .models import CuentaPUCModel, EventoTransaccionModel, PartidaModel, TransaccionModel
 
 
@@ -101,14 +107,24 @@ class RepositorioTransacciones(Protocol):
         id_transaccion: uuid.UUID,
         partidas: Sequence[Partida],
         *,
+        motivo: str,
         usuario_id: int | None = None,
-        motivo: str | None = None,
     ) -> TransaccionRegistrada:
         """
         Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR, con evento CORREGIDA.
+        Exige un motivo de al menos 10 caracteres (MotivoInvalidoError).
 
         Antes guarda en asiento_propuesto las partidas del agente (solo si aún no hay una
         propuesta guardada, para no perder la original) y marca corregido_en.
+        """
+        ...
+
+    def rechazar(
+        self, id_transaccion: uuid.UUID, *, motivo: str, usuario_id: int | None = None
+    ) -> TransaccionRegistrada:
+        """
+        EN_ALERTA o APROBADA_AUTOMATICA → RECHAZADA (estado final), con evento RECHAZADA.
+        Exige un motivo de al menos 10 caracteres. Desde otro estado: TransicionInvalidaError.
         """
         ...
 
@@ -331,6 +347,7 @@ class RepositorioSQL:
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
     ) -> TransaccionRegistrada:
+        motivo = motivo_opcional(motivo)
         with self._transaccion() as sesion:
             t = self._cargar(sesion, id_transaccion)
             validar_aprobacion(EstadoTransaccion(t.estado), bool(t.partidas))
@@ -347,9 +364,10 @@ class RepositorioSQL:
         id_transaccion: uuid.UUID,
         partidas: Sequence[Partida],
         *,
+        motivo: str,
         usuario_id: int | None = None,
-        motivo: str | None = None,
     ) -> TransaccionRegistrada:
+        motivo = exigir_motivo(motivo, "corregir")
         try:
             with self._transaccion() as sesion:
                 t = self._cargar(sesion, id_transaccion)
@@ -375,6 +393,23 @@ class RepositorioSQL:
         except IntegrityError as exc:
             self._traducir_llave_foranea(exc, partidas)
             raise
+
+    def rechazar(
+        self, id_transaccion: uuid.UUID, *, motivo: str, usuario_id: int | None = None
+    ) -> TransaccionRegistrada:
+        motivo = exigir_motivo(motivo, "rechazar")
+        with self._transaccion() as sesion:
+            t = self._cargar(sesion, id_transaccion)
+            validar_rechazo(EstadoTransaccion(t.estado))
+            antes = {"estado": t.estado}
+            t.estado = EstadoTransaccion.RECHAZADA.value
+            sesion.add(
+                _evento(
+                    t.id, TipoEvento.RECHAZADA, usuario_id, motivo=motivo, antes=antes, despues={"estado": t.estado}
+                )
+            )
+            sesion.flush()
+            return _a_registro(t)
 
     def eventos(self, id_transaccion: uuid.UUID) -> list[EventoTransaccion]:
         with self._transaccion() as sesion:

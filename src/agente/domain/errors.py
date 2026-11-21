@@ -75,3 +75,7 @@ class UsuarioNoEncontradoError(ErrorDeDominio):
 
 class UltimoAdministradorError(ErrorDeDominio):
     """El cambio dejaría el sistema sin ningún ADMIN activo."""
+
+
+class MotivoInvalidoError(DatosInvalidosError):
+    """Falta el motivo de una acción del contador o es demasiado corto."""

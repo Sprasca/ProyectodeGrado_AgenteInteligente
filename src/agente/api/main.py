@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -132,6 +132,19 @@ class PartidaEntrada(BaseModel):
 
 class SolicitudCorreccion(BaseModel):
     partidas: list[PartidaEntrada]
+    motivo: str  # al menos 10 caracteres (si no, 422)
+
+
+class SolicitudRechazo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    motivo: str  # al menos 10 caracteres (si no, 422)
+
+
+class SolicitudAprobacion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    motivo: str | None = None
 
 
 class CuentaEntrada(BaseModel):
@@ -257,8 +270,15 @@ def eventos_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
 
 
 @app.post("/transacciones/{id_transaccion}/aprobar")
-def aprobar_transaccion(id_transaccion: uuid.UUID, usuario: UsuarioAutorizado, repositorio: Repositorio):
-    return jsonable_encoder(repositorio.aprobar(id_transaccion, usuario_id=usuario.id))
+def aprobar_transaccion(
+    id_transaccion: uuid.UUID,
+    usuario: UsuarioAutorizado,
+    repositorio: Repositorio,
+    solicitud: Annotated[SolicitudAprobacion | None, Body()] = None,
+):
+    """El cuerpo es opcional: {"motivo": "..."}."""
+    motivo = solicitud.motivo if solicitud is not None else None
+    return jsonable_encoder(repositorio.aprobar(id_transaccion, usuario_id=usuario.id, motivo=motivo))
 
 
 @app.post("/transacciones/{id_transaccion}/corregir")
@@ -266,7 +286,17 @@ def corregir_transaccion(
     id_transaccion: uuid.UUID, solicitud: SolicitudCorreccion, usuario: UsuarioAutorizado, repositorio: Repositorio
 ):
     partidas = [Partida(p.cuenta, p.naturaleza, p.valor, p.descripcion) for p in solicitud.partidas]
-    return jsonable_encoder(repositorio.corregir(id_transaccion, partidas, usuario_id=usuario.id))
+    return jsonable_encoder(
+        repositorio.corregir(id_transaccion, partidas, motivo=solicitud.motivo, usuario_id=usuario.id)
+    )
+
+
+@app.post("/transacciones/{id_transaccion}/rechazar")
+def rechazar_transaccion(
+    id_transaccion: uuid.UUID, solicitud: SolicitudRechazo, usuario: UsuarioAutorizado, repositorio: Repositorio
+):
+    """EN_ALERTA o APROBADA_AUTOMATICA → RECHAZADA (final). Motivo de al menos 10 caracteres."""
+    return jsonable_encoder(repositorio.rechazar(id_transaccion, motivo=solicitud.motivo, usuario_id=usuario.id))
 
 
 # --- Catálogo administrado por el contador (RF09) ------------------------------------------

@@ -42,6 +42,7 @@ class EstadoTransaccion(StrEnum):
     EN_ALERTA = "EN_ALERTA"
     APROBADA_CONTADOR = "APROBADA_CONTADOR"
     CORREGIDA_CONTADOR = "CORREGIDA_CONTADOR"
+    RECHAZADA = "RECHAZADA"  # estado final: el contador descartó la transacción
 
 
 class Rol(StrEnum):

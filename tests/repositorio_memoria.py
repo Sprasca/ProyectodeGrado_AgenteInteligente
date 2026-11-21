@@ -11,7 +11,13 @@ from agente.domain.enums import EstadoTransaccion, TipoEvento
 from agente.domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
 from agente.domain.resultado import ResultadoClasificacion
-from agente.domain.transacciones import validar_aprobacion, validar_correccion
+from agente.domain.transacciones import (
+    exigir_motivo,
+    motivo_opcional,
+    validar_aprobacion,
+    validar_correccion,
+    validar_rechazo,
+)
 from agente.infrastructure.db.transacciones import (
     CuentaNoSembradaError,
     EventoTransaccion,
@@ -84,6 +90,7 @@ class RepositorioMemoria:
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
     ) -> TransaccionRegistrada:
+        motivo = motivo_opcional(motivo)
         t = self._cargar(id_transaccion)
         validar_aprobacion(t.estado, bool(t.partidas))
         self._por_id[t.id] = replace(t, estado=EstadoTransaccion.APROBADA_CONTADOR)
@@ -102,9 +109,10 @@ class RepositorioMemoria:
         id_transaccion: uuid.UUID,
         partidas: Sequence[Partida],
         *,
+        motivo: str,
         usuario_id: int | None = None,
-        motivo: str | None = None,
     ) -> TransaccionRegistrada:
+        motivo = exigir_motivo(motivo, "corregir")
         t = self._cargar(id_transaccion)
         asiento = validar_correccion(t.estado, partidas, self._catalogo)
         self._verificar_llave_foranea(asiento.partidas)
@@ -122,6 +130,23 @@ class RepositorioMemoria:
             motivo=motivo,
             antes=estado_y_partidas(t.estado, t.partidas),
             despues=estado_y_partidas(EstadoTransaccion.CORREGIDA_CONTADOR, asiento.partidas),
+        )
+        return self._por_id[t.id]
+
+    def rechazar(
+        self, id_transaccion: uuid.UUID, *, motivo: str, usuario_id: int | None = None
+    ) -> TransaccionRegistrada:
+        motivo = exigir_motivo(motivo, "rechazar")
+        t = self._cargar(id_transaccion)
+        validar_rechazo(t.estado)
+        self._por_id[t.id] = replace(t, estado=EstadoTransaccion.RECHAZADA)
+        self._registrar(
+            t.id,
+            TipoEvento.RECHAZADA,
+            usuario_id,
+            motivo=motivo,
+            antes={"estado": t.estado.value},
+            despues={"estado": EstadoTransaccion.RECHAZADA.value},
         )
         return self._por_id[t.id]
 
