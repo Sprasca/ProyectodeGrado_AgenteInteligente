@@ -21,7 +21,7 @@ from ..application.clasificar_con_nlp import (
 )
 from ..config import get_settings
 from ..domain.asiento import Partida
-from ..domain.enums import EstadoTransaccion, Naturaleza
+from ..domain.enums import EstadoTransaccion, Naturaleza, Rol
 from ..domain.errors import (
     AsientoInvalidoError,
     ConflictoReglaError,
@@ -32,6 +32,9 @@ from ..domain.errors import (
     ReglaNoEncontradaError,
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
+    UltimoAdministradorError,
+    UsuarioDuplicadoError,
+    UsuarioNoEncontradoError,
 )
 from ..domain.puc import CatalogoPUC, ReglaIngreso
 from ..infrastructure.db.catalogo import ReglaGuardada, RepositorioCatalogo, RepositorioCatalogoSQL
@@ -44,13 +47,15 @@ from ..infrastructure.db.transacciones import (
 )
 from ..infrastructure.dian.lector_pdf import factura_desde_pdf
 from ..infrastructure.dian.parser import parsear_xml
-from .autenticacion import RepoUsuarios, crear_token, usuario_actual, validar_secreto
+from .autenticacion import RepoUsuarios, crear_token, validar_secreto
+from .permisos import autorizar
 
 # Sin JWT_SECRETO (o con uno demasiado corto) la API no arranca.
 validar_secreto(get_settings())
 
-# Toda ruta exige un token válido, excepto /salud y /auth/token.
-Autenticado = Depends(usuario_actual)
+# Toda ruta exige un token válido (401) y el permiso de su rol (403), excepto /salud y /auth/token.
+# Los permisos están en agente.api.permisos.
+Autorizado = Depends(autorizar)
 
 app = FastAPI(title="Agente inteligente PUC", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -96,6 +101,9 @@ app.add_exception_handler(AsientoInvalidoError, _manejador(422))
 app.add_exception_handler(CuentaNoExisteError, _manejador(422))
 app.add_exception_handler(CuentaDuplicadaError, _manejador(409))
 app.add_exception_handler(ReglaNoEncontradaError, _manejador(404))
+app.add_exception_handler(UsuarioDuplicadoError, _manejador(409))
+app.add_exception_handler(UsuarioNoEncontradoError, _manejador(404))
+app.add_exception_handler(UltimoAdministradorError, _manejador(409))
 
 
 @app.exception_handler(DatosInvalidosError)
@@ -154,6 +162,25 @@ class ReglaEdicion(BaseModel):
     descripcion: str = ""
 
 
+class UsuarioEntrada(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nombre_usuario: str
+    nombre_completo: str
+    contrasena: str
+    rol: Rol
+
+
+class UsuarioEdicion(BaseModel):
+    """Solo los campos que se envían cambian. Para desactivar: {"activo": false}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rol: Rol | None = None
+    activo: bool | None = None
+    nombre_completo: str | None = None
+
+
 def _regla_respuesta(guardada: ReglaGuardada) -> dict:
     """La regla guardada y las advertencias que se confirmaron (vacías si no hubo conflicto)."""
     advertencias = [asdict(a) | {"mensaje": str(a)} for a in guardada.advertencias]
@@ -177,7 +204,7 @@ def emitir_token(formulario: Annotated[OAuth2PasswordRequestForm, Depends()], us
     return {"access_token": crear_token(usuario), "token_type": "bearer", "expires_in": minutos * 60}
 
 
-@app.post("/facturas/clasificar", dependencies=[Autenticado])
+@app.post("/facturas/clasificar", dependencies=[Autorizado])
 def clasificar_archivo(
     archivo: Annotated[UploadFile, File()],
     repositorio: Repositorio,
@@ -201,7 +228,7 @@ def clasificar_archivo(
     return respuesta
 
 
-@app.post("/carpeta/procesar", dependencies=[Autenticado])
+@app.post("/carpeta/procesar", dependencies=[Autorizado])
 def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
     try:
         return jsonable_encoder(procesar_carpeta(solicitud.ruta, solicitud.recursivo, solicitud.usar_nlp, catalogo))
@@ -209,12 +236,12 @@ def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
         raise HTTPException(404, str(exc)) from exc
 
 
-@app.get("/transacciones", dependencies=[Autenticado])
+@app.get("/transacciones", dependencies=[Autorizado])
 def listar_transacciones(repositorio: Repositorio, estado: EstadoTransaccion | None = None):
     return jsonable_encoder(repositorio.listar(estado))
 
 
-@app.get("/transacciones/{id_transaccion}", dependencies=[Autenticado])
+@app.get("/transacciones/{id_transaccion}", dependencies=[Autorizado])
 def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     transaccion = repositorio.obtener(id_transaccion)
     if transaccion is None:
@@ -222,12 +249,12 @@ def obtener_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     return jsonable_encoder(transaccion)
 
 
-@app.post("/transacciones/{id_transaccion}/aprobar", dependencies=[Autenticado])
+@app.post("/transacciones/{id_transaccion}/aprobar", dependencies=[Autorizado])
 def aprobar_transaccion(id_transaccion: uuid.UUID, repositorio: Repositorio):
     return jsonable_encoder(repositorio.aprobar(id_transaccion))
 
 
-@app.post("/transacciones/{id_transaccion}/corregir", dependencies=[Autenticado])
+@app.post("/transacciones/{id_transaccion}/corregir", dependencies=[Autorizado])
 def corregir_transaccion(id_transaccion: uuid.UUID, solicitud: SolicitudCorreccion, repositorio: Repositorio):
     partidas = [Partida(p.cuenta, p.naturaleza, p.valor, p.descripcion) for p in solicitud.partidas]
     return jsonable_encoder(repositorio.corregir(id_transaccion, partidas))
@@ -236,23 +263,23 @@ def corregir_transaccion(id_transaccion: uuid.UUID, solicitud: SolicitudCorrecci
 # --- Catálogo administrado por el contador (RF09) ------------------------------------------
 
 
-@app.get("/catalogo/cuentas", dependencies=[Autenticado])
+@app.get("/catalogo/cuentas", dependencies=[Autorizado])
 def listar_cuentas(repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.listar_cuentas())
 
 
-@app.post("/catalogo/cuentas", status_code=status.HTTP_201_CREATED, dependencies=[Autenticado])
+@app.post("/catalogo/cuentas", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
 def crear_cuenta(cuenta: CuentaEntrada, repositorio: RepoCatalogo):
     """Código repetido → 409. Datos inválidos → 422. Las cuentas no se borran."""
     return jsonable_encoder(repositorio.crear_cuenta(cuenta.codigo, cuenta.nombre, cuenta.naturaleza))
 
 
-@app.get("/reglas", dependencies=[Autenticado])
+@app.get("/reglas", dependencies=[Autorizado])
 def listar_reglas(repositorio: RepoCatalogo, activa: bool | None = None):
     return jsonable_encoder(repositorio.listar_reglas(activa))
 
 
-@app.get("/reglas/{codigo}", dependencies=[Autenticado])
+@app.get("/reglas/{codigo}", dependencies=[Autorizado])
 def obtener_regla(codigo: str, repositorio: RepoCatalogo):
     regla = repositorio.obtener_regla(codigo)
     if regla is None:
@@ -260,14 +287,14 @@ def obtener_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(regla)
 
 
-@app.post("/reglas", status_code=status.HTTP_201_CREATED, dependencies=[Autenticado])
+@app.post("/reglas", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
 def crear_regla(regla: ReglaEntrada, repositorio: RepoCatalogo, confirmar: bool = False):
     """Errores → 422. Advertencias de conflicto sin confirmar=true → 409 (no guarda)."""
     nueva = ReglaIngreso(regla.codigo, regla.cuenta_ingreso, tuple(regla.palabras_clave), regla.descripcion)
     return _regla_respuesta(repositorio.crear_regla(nueva, confirmar=confirmar))
 
 
-@app.put("/reglas/{codigo}", dependencies=[Autenticado])
+@app.put("/reglas/{codigo}", dependencies=[Autorizado])
 def editar_regla(codigo: str, regla: ReglaEdicion, repositorio: RepoCatalogo, confirmar: bool = False):
     """Como POST /reglas. El código de una regla no se puede cambiar."""
     if regla.codigo is not None and regla.codigo.strip() != codigo:
@@ -278,16 +305,42 @@ def editar_regla(codigo: str, regla: ReglaEdicion, repositorio: RepoCatalogo, co
     return _regla_respuesta(guardada)
 
 
-@app.post("/reglas/{codigo}/activar", dependencies=[Autenticado])
+@app.post("/reglas/{codigo}/activar", dependencies=[Autorizado])
 def activar_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.activar_regla(codigo))
 
 
-@app.post("/reglas/{codigo}/desactivar", dependencies=[Autenticado])
+@app.post("/reglas/{codigo}/desactivar", dependencies=[Autorizado])
 def desactivar_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.desactivar_regla(codigo))
 
 
-@app.get("/reglas/{codigo}/historial", dependencies=[Autenticado])
+@app.get("/reglas/{codigo}/historial", dependencies=[Autorizado])
 def historial_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.historial(codigo))
+
+
+# --- Usuarios (solo ADMIN) -------------------------------------------------------------------
+
+
+@app.get("/usuarios", dependencies=[Autorizado])
+def listar_usuarios(usuarios: RepoUsuarios):
+    return jsonable_encoder(usuarios.listar())
+
+
+@app.post("/usuarios", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
+def crear_usuario(usuario: UsuarioEntrada, usuarios: RepoUsuarios):
+    """Nombre repetido → 409. Datos inválidos (p. ej. contraseña de menos de 8 caracteres) → 422."""
+    creado = usuarios.crear(usuario.nombre_usuario, usuario.nombre_completo, usuario.contrasena, usuario.rol)
+    return jsonable_encoder(creado)
+
+
+@app.put("/usuarios/{id_usuario}", dependencies=[Autorizado])
+def actualizar_usuario(id_usuario: int, cambios: UsuarioEdicion, usuarios: RepoUsuarios):
+    """Cambia rol, estado (activo) o nombre completo. Dejar el sistema sin ADMIN activo → 409."""
+    if cambios.rol is None and cambios.activo is None and cambios.nombre_completo is None:
+        raise HTTPException(422, "Envíe al menos uno de: rol, activo, nombre_completo.")
+    actualizado = usuarios.actualizar(
+        id_usuario, rol=cambios.rol, activo=cambios.activo, nombre_completo=cambios.nombre_completo
+    )
+    return jsonable_encoder(actualizado)
