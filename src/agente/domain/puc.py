@@ -149,13 +149,21 @@ class CatalogoPUC:
             f"Actualice data/puc/cuentas_ventas.csv."
         )
 
+    # Ingresos por venta de bienes (agropecuario e industrias manufactureras / comercio).
+    _PREFIJOS_INGRESO_BIENES = ("4120", "4135")
+
     def cuenta_debito_venta(self, *, a_credito: bool, efectivo: bool, cuenta_ingreso: str | None = None) -> str:
-        """Elige la cuenta de débito según condición de pago y tipo de ingreso."""
+        """
+        Elige la cuenta de débito según condición de pago y tipo de ingreso.
+
+        A crédito: ingresos 4120 o 4135 → clientes por venta de bienes; cualquier otro
+        ingreso de clase 4 → clientes por prestación de servicios.
+        """
         if a_credito:
-            if cuenta_ingreso and cuenta_ingreso.startswith("421"):
-                return self.resolver("clientes_servicios")
-            if cuenta_ingreso and cuenta_ingreso.startswith("413"):
+            if cuenta_ingreso and cuenta_ingreso.startswith(self._PREFIJOS_INGRESO_BIENES):
                 return self.resolver("clientes_bienes")
+            if cuenta_ingreso and cuenta_ingreso.startswith("4"):
+                return self.resolver("clientes_servicios")
             return self.resolver("clientes")
         if efectivo:
             return self.resolver("caja")
