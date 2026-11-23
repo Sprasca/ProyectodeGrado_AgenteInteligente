@@ -1,12 +1,14 @@
 """Pruebas de contrato de RepositorioTransacciones.
 
 Las heredan test_repositorio_memoria.py (unitarias) y test_repositorio_sql.py (integración);
-cada módulo define los fixtures `repo`, `nuevo_numero` (genera números de factura únicos) y
+cada módulo define los fixtures `repo`, `id_usuario` (un usuario que exista),
+`nuevo_numero` (genera números de factura únicos) y
 `repo_extendido` (su catálogo tiene CUENTA_NO_SEMBRADA, que la base no tiene).
 El `repo` de integración debe borrar al final todo lo que guardó, incluidas las facturas
 con número provisional (SIN-NUMERO-...), que no usan `nuevo_numero`.
 """
 
+import hashlib
 import re
 import uuid
 from decimal import Decimal
@@ -14,21 +16,25 @@ from decimal import Decimal
 import pytest
 from fabricas import (
     CUENTA_NO_SEMBRADA,
+    cufe_unico,
     partidas_con_cuenta_no_sembrada,
     partidas_correctas,
     resultado_alerta_con_asiento,
     resultado_alerta_sin_asiento,
     resultado_aprobado,
     resultado_con_cuenta_no_sembrada,
+    resultado_con_cufe,
     resultado_sin_numero,
 )
 
 from agente.domain.asiento import Partida
-from agente.domain.enums import EstadoTransaccion, Naturaleza
+from agente.domain.documento import DocumentoOriginal
+from agente.domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from agente.domain.errors import (
     AsientoInvalidoError,
     CuentaNoExisteError,
     FacturaDuplicadaError,
+    MotivoInvalidoError,
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
 )
@@ -42,6 +48,10 @@ def _partidas_con_bancos(catalogo):
         Partida("4135", Naturaleza.CREDITO, Decimal("100000.00"), "Ingreso"),
         Partida(catalogo.cuenta_iva(), Naturaleza.CREDITO, Decimal("19000.00"), "IVA"),
     ]
+
+
+# corregir exige un motivo de al menos 10 caracteres.
+MOTIVO = "Corrección de prueba del contrato"
 
 
 class ContratoRepositorio:
@@ -141,7 +151,7 @@ class ContratoRepositorio:
     def test_corregir_desde_en_alerta_reemplaza_partidas(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
         nuevas = partidas_correctas(catalogo)
-        t = repo.corregir(id_, nuevas)
+        t = repo.corregir(id_, nuevas, motivo=MOTIVO)
         assert t.estado is EstadoTransaccion.CORREGIDA_CONTADOR
         guardada = repo.obtener(id_)
         assert guardada.estado is EstadoTransaccion.CORREGIDA_CONTADOR
@@ -156,7 +166,7 @@ class ContratoRepositorio:
             Partida("4135", Naturaleza.CREDITO, Decimal("100000")),
             Partida(catalogo.cuenta_iva(), Naturaleza.CREDITO, Decimal("19000")),
         ]
-        t = repo.corregir(id_, partidas)
+        t = repo.corregir(id_, partidas, motivo=MOTIVO)
         assert t.estado is EstadoTransaccion.CORREGIDA_CONTADOR
         assert catalogo.resolver("bancos") in {p.cuenta for p in repo.obtener(id_).partidas}
 
@@ -164,14 +174,14 @@ class ContratoRepositorio:
         id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
         repo.aprobar(id_)
         with pytest.raises(TransicionInvalidaError):
-            repo.corregir(id_, partidas_correctas(catalogo))
+            repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
         assert repo.obtener(id_).estado is EstadoTransaccion.APROBADA_CONTADOR
 
     def test_corregir_desde_corregida_es_transicion_invalida(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
-        repo.corregir(id_, partidas_correctas(catalogo))
+        repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
         with pytest.raises(TransicionInvalidaError):
-            repo.corregir(id_, partidas_correctas(catalogo))
+            repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
 
     # --- asiento propuesto por el agente ---------------------------------------------
 
@@ -186,7 +196,7 @@ class ContratoRepositorio:
         propuesta = repo.obtener(id_).partidas
         assert len(propuesta) == 3
 
-        repo.corregir(id_, _partidas_con_bancos(catalogo))
+        repo.corregir(id_, _partidas_con_bancos(catalogo), motivo=MOTIVO)
 
         t = repo.obtener(id_)
         assert t.asiento_propuesto == propuesta
@@ -197,7 +207,7 @@ class ContratoRepositorio:
 
     def test_corregir_sin_asiento_del_agente_guarda_propuesta_vacia(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
-        repo.corregir(id_, partidas_correctas(catalogo))
+        repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
         t = repo.obtener(id_)
         assert t.asiento_propuesto == ()  # el agente no propuso partidas (distinto de None: sí hubo corrección)
         assert t.corregido_en is not None
@@ -205,12 +215,12 @@ class ContratoRepositorio:
     def test_segunda_correccion_no_sobrescribe_la_propuesta_original(self, repo, nuevo_numero, catalogo):
         id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         propuesta = repo.obtener(id_).partidas
-        repo.corregir(id_, _partidas_con_bancos(catalogo))
+        repo.corregir(id_, _partidas_con_bancos(catalogo), motivo=MOTIVO)
         primera = repo.obtener(id_)
 
         # La regla vigente no permite corregir dos veces; si se intenta, nada cambia.
         with pytest.raises(TransicionInvalidaError):
-            repo.corregir(id_, partidas_correctas(catalogo))
+            repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
 
         t = repo.obtener(id_)
         assert t.asiento_propuesto == propuesta
@@ -224,7 +234,7 @@ class ContratoRepositorio:
             Partida("4135", Naturaleza.CREDITO, Decimal("2")),
         ]
         with pytest.raises(AsientoInvalidoError):
-            repo.corregir(id_, descuadrado)
+            repo.corregir(id_, descuadrado, motivo=MOTIVO)
         t = repo.obtener(id_)
         assert t.asiento_propuesto is None
         assert t.corregido_en is None
@@ -238,7 +248,7 @@ class ContratoRepositorio:
             Partida("4135", Naturaleza.CREDITO, Decimal("100000")),
         ]
         with pytest.raises(AsientoInvalidoError):
-            repo.corregir(id_, descuadrado)
+            repo.corregir(id_, descuadrado, motivo=MOTIVO)
         despues = repo.obtener(id_)
         assert despues.estado is EstadoTransaccion.EN_ALERTA
         assert despues.partidas == antes.partidas
@@ -250,12 +260,12 @@ class ContratoRepositorio:
             Partida("4135", Naturaleza.CREDITO, Decimal("100")),
         ]
         with pytest.raises(CuentaNoExisteError):
-            repo.corregir(id_, partidas)
+            repo.corregir(id_, partidas, motivo=MOTIVO)
         assert repo.obtener(id_).estado is EstadoTransaccion.EN_ALERTA
 
     def test_corregir_inexistente(self, repo, catalogo):
         with pytest.raises(TransaccionNoEncontradaError):
-            repo.corregir(uuid.uuid4(), partidas_correctas(catalogo))
+            repo.corregir(uuid.uuid4(), partidas_correctas(catalogo), motivo=MOTIVO)
 
     # --- factura sin número ------------------------------------------------------------
 
@@ -297,7 +307,7 @@ class ContratoRepositorio:
         antes = repo_extendido.obtener(id_)
 
         with pytest.raises(CuentaNoSembradaError) as error:
-            repo_extendido.corregir(id_, partidas_con_cuenta_no_sembrada(catalogo))
+            repo_extendido.corregir(id_, partidas_con_cuenta_no_sembrada(catalogo), motivo=MOTIVO)
         assert error.value.cuenta == CUENTA_NO_SEMBRADA
 
         despues = repo_extendido.obtener(id_)
@@ -305,3 +315,154 @@ class ContratoRepositorio:
         assert despues.partidas == antes.partidas
         assert despues.asiento_propuesto is None
         assert despues.corregido_en is None
+
+    # --- trazabilidad: eventos con su usuario ------------------------------------------------
+
+    def test_guardar_registra_recibida_y_clasificada(self, repo, nuevo_numero, catalogo, id_usuario):
+        numero = nuevo_numero()
+        id_ = repo.guardar(resultado_aprobado(catalogo, numero), usuario_id=id_usuario)
+        recibida, clasificada = repo.eventos(id_)
+        assert (recibida.tipo, recibida.usuario_id) == (TipoEvento.RECIBIDA, id_usuario)
+        assert recibida.despues["numero_factura"] == numero
+        assert (clasificada.tipo, clasificada.usuario_id) == (TipoEvento.CLASIFICADA, None)  # automático
+        assert clasificada.despues["estado"] == "APROBADA_AUTOMATICA"
+        assert len(clasificada.despues["partidas"]) == 3
+        assert all(e.transaccion_id == id_ and e.fecha is not None for e in (recibida, clasificada))
+
+    def test_aprobar_registra_evento_con_usuario_y_motivo(self, repo, nuevo_numero, catalogo, id_usuario):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        repo.aprobar(id_, usuario_id=id_usuario, motivo="  Revisado contra el soporte  ")
+        evento = repo.eventos(id_)[-1]
+        assert (evento.tipo, evento.usuario_id, evento.motivo) == (
+            TipoEvento.APROBADA,
+            id_usuario,
+            "Revisado contra el soporte",
+        )
+        assert (evento.antes, evento.despues) == ({"estado": "EN_ALERTA"}, {"estado": "APROBADA_CONTADOR"})
+
+    def test_aprobar_sin_motivo_deja_el_motivo_vacio(self, repo, nuevo_numero, catalogo, id_usuario):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        repo.aprobar(id_, usuario_id=id_usuario, motivo="   ")
+        assert repo.eventos(id_)[-1].motivo is None
+
+    def test_corregir_registra_evento_con_partidas_de_antes_y_despues(self, repo, nuevo_numero, catalogo, id_usuario):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        propuestas = repo.obtener(id_).partidas
+        repo.corregir(id_, _partidas_con_bancos(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
+        evento = repo.eventos(id_)[-1]
+        assert (evento.tipo, evento.usuario_id, evento.motivo) == (TipoEvento.CORREGIDA, id_usuario, MOTIVO)
+        assert evento.antes["estado"] == "APROBADA_AUTOMATICA"
+        assert [p["cuenta"] for p in evento.antes["partidas"]] == [p.cuenta for p in propuestas]
+        assert evento.despues["estado"] == "CORREGIDA_CONTADOR"
+        assert evento.despues["partidas"][0]["cuenta"] == catalogo.resolver("bancos")
+
+    def test_eventos_de_transaccion_inexistente(self, repo):
+        with pytest.raises(TransaccionNoEncontradaError):
+            repo.eventos(uuid.uuid4())
+
+    # --- rechazo y motivo obligatorio ----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "fabrica", [resultado_alerta_con_asiento, resultado_alerta_sin_asiento, resultado_aprobado]
+    )
+    def test_rechazar_desde_en_alerta_o_aprobada_automatica(self, repo, nuevo_numero, catalogo, id_usuario, fabrica):
+        id_ = repo.guardar(fabrica(catalogo, nuevo_numero()))
+        estado_inicial = repo.obtener(id_).estado
+        t = repo.rechazar(id_, motivo="  Factura emitida por error  ", usuario_id=id_usuario)
+        assert t.estado is EstadoTransaccion.RECHAZADA
+        assert repo.obtener(id_).estado is EstadoTransaccion.RECHAZADA
+        evento = repo.eventos(id_)[-1]
+        assert (evento.tipo, evento.usuario_id, evento.motivo) == (
+            TipoEvento.RECHAZADA,
+            id_usuario,
+            "Factura emitida por error",
+        )
+        assert (evento.antes, evento.despues) == ({"estado": estado_inicial.value}, {"estado": "RECHAZADA"})
+
+    def test_rechazada_es_estado_final(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        repo.rechazar(id_, motivo=MOTIVO)
+        with pytest.raises(TransicionInvalidaError):
+            repo.aprobar(id_)
+        with pytest.raises(TransicionInvalidaError):
+            repo.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO)
+        with pytest.raises(TransicionInvalidaError):
+            repo.rechazar(id_, motivo=MOTIVO)
+        assert repo.obtener(id_).estado is EstadoTransaccion.RECHAZADA
+        # RECIBIDA, CLASIFICADA y RECHAZADA: los intentos rechazados no dejan evento.
+        assert [e.tipo for e in repo.eventos(id_)] == [
+            TipoEvento.RECIBIDA,
+            TipoEvento.CLASIFICADA,
+            TipoEvento.RECHAZADA,
+        ]
+
+    def test_no_se_rechaza_una_transaccion_ya_resuelta(self, repo, nuevo_numero, catalogo):
+        aprobada = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        repo.aprobar(aprobada)
+        corregida = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()))
+        repo.corregir(corregida, partidas_correctas(catalogo), motivo=MOTIVO)
+        for id_ in (aprobada, corregida):
+            with pytest.raises(TransicionInvalidaError):
+                repo.rechazar(id_, motivo=MOTIVO)
+
+    def test_rechazar_inexistente(self, repo):
+        with pytest.raises(TransaccionNoEncontradaError):
+            repo.rechazar(uuid.uuid4(), motivo=MOTIVO)
+
+    @pytest.mark.parametrize("motivo", ["", "corto", "   123456789   ", None])
+    def test_corregir_y_rechazar_exigen_motivo_de_10_caracteres(self, repo, nuevo_numero, catalogo, motivo):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        with pytest.raises(MotivoInvalidoError):
+            repo.corregir(id_, partidas_correctas(catalogo), motivo=motivo)
+        with pytest.raises(MotivoInvalidoError):
+            repo.rechazar(id_, motivo=motivo)
+        assert repo.obtener(id_).estado is EstadoTransaccion.EN_ALERTA
+        assert len(repo.eventos(id_)) == 2
+
+    def test_motivo_de_exactamente_10_caracteres_es_valido(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        assert repo.rechazar(id_, motivo="1234567890").estado is EstadoTransaccion.RECHAZADA
+
+    # --- documento original y CUFE -----------------------------------------------------------
+
+    def test_guardar_con_documento_original(self, repo, nuevo_numero, catalogo):
+        contenido = "<Invoice>original con tildes: Ñandú</Invoice>".encode()
+        documento = DocumentoOriginal.recibido("C:/carpeta/factura.xml", TipoDocumento.XML, contenido)
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()), documento=documento)
+
+        guardado = repo.documento(id_)
+        assert guardado.contenido == contenido
+        assert guardado.nombre_archivo == "factura.xml"
+        assert guardado.tipo is TipoDocumento.XML
+        assert guardado.sha256 == hashlib.sha256(contenido).hexdigest()
+        assert guardado.recibido_en is not None
+        recibida = repo.eventos(id_)[0]
+        assert recibida.despues["documento"] == {
+            "nombre_archivo": "factura.xml",
+            "tipo": "XML",
+            "bytes": len(contenido),
+            "sha256": hashlib.sha256(contenido).hexdigest(),
+        }
+
+    def test_sin_documento_devuelve_none(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        assert repo.documento(id_) is None
+
+    def test_documento_de_transaccion_inexistente(self, repo):
+        with pytest.raises(TransaccionNoEncontradaError):
+            repo.documento(uuid.uuid4())
+
+    def test_cufe_repetido_es_duplicado_aunque_cambie_el_numero(self, repo, nuevo_numero, catalogo):
+        cufe = cufe_unico()
+        id_ = repo.guardar(resultado_con_cufe(catalogo, nuevo_numero(), cufe))
+        assert repo.obtener(id_).cufe == cufe
+        assert repo.eventos(id_)[0].despues["cufe"] == cufe
+        otro_numero = nuevo_numero()
+        with pytest.raises(FacturaDuplicadaError, match=cufe):
+            repo.guardar(resultado_con_cufe(catalogo, otro_numero, cufe))
+        assert all(t.numero_factura != otro_numero for t in repo.listar())
+
+    def test_varias_facturas_sin_cufe_no_chocan(self, repo, nuevo_numero, catalogo):
+        primera = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        segunda = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        assert repo.obtener(primera).cufe is None and repo.obtener(segunda).cufe is None

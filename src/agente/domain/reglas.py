@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from .enums import Naturaleza
+from .enums import Naturaleza, OrigenRegla
 from .errors import ConflictoReglaError, ReglaInvalidaError
 from .puc import CuentaPUC, ReglaIngreso, normalizar
 
@@ -25,6 +25,7 @@ class ReglaAdministrada:
     activa: bool = True
     creado_en: datetime | None = None
     actualizado_en: datetime | None = None
+    origen: OrigenRegla = OrigenRegla.CONTADOR
 
     def como_regla_ingreso(self) -> ReglaIngreso:
         return ReglaIngreso(self.codigo, self.cuenta_ingreso, self.palabras_clave, self.descripcion)

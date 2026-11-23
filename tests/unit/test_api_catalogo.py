@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from autenticacion_pruebas import encabezados
 from fastapi.testclient import TestClient
 from repositorio_catalogo_memoria import RepositorioCatalogoMemoria
 from repositorio_memoria import RepositorioMemoria
@@ -11,11 +12,14 @@ from sqlalchemy.exc import OperationalError
 import agente.application.clasificar_con_nlp as aplicacion
 from agente.api.main import app, get_repositorio, get_repositorio_catalogo
 from agente.config import Settings, get_settings
+from agente.domain.enums import Rol
 from agente.domain.puc import CatalogoPUC
 from agente.infrastructure.db.repositorio import cargar_catalogo_bd
 from agente.infrastructure.db.transacciones import RepositorioNoDisponibleError
 
 XML = (Path(__file__).resolve().parents[1] / "fixtures" / "factura_comercio_contado.xml").read_bytes()
+CONTADOR = encabezados(Rol.CONTADOR)  # lee y administra cuentas y reglas
+AUXILIAR = encabezados(Rol.AUXILIAR)  # carga facturas
 
 
 @pytest.fixture
@@ -25,7 +29,7 @@ def repo_catalogo(catalogo):
 
 
 @pytest.fixture
-def cliente(repo_catalogo, catalogo):
+def cliente(repo_catalogo, catalogo, usuarios_api):
     app.dependency_overrides[get_repositorio_catalogo] = lambda: repo_catalogo
     app.dependency_overrides[get_repositorio] = lambda: RepositorioMemoria(catalogo)
     yield TestClient(app)
@@ -40,21 +44,23 @@ def _regla(codigo="R-NUEVA", cuenta="4135", palabras=("abarrote",), descripcion=
 
 
 def test_listar_cuentas(cliente):
-    r = cliente.get("/catalogo/cuentas")
+    r = cliente.get("/catalogo/cuentas", headers=CONTADOR)
     assert r.status_code == 200
     por_codigo = {c["codigo"]: c for c in r.json()}
     assert por_codigo["4135"] == {"codigo": "4135", "nombre": "COMERCIO AL POR MAYOR", "naturaleza": "CREDITO"}
 
 
 def test_crear_cuenta_201(cliente):
-    r = cliente.post("/catalogo/cuentas", json={"codigo": "4199", "nombre": "Otros ingresos", "naturaleza": "CREDITO"})
+    cuerpo = {"codigo": "4199", "nombre": "Otros ingresos", "naturaleza": "CREDITO"}
+    r = cliente.post("/catalogo/cuentas", json=cuerpo, headers=CONTADOR)
     assert r.status_code == 201
     assert r.json() == {"codigo": "4199", "nombre": "Otros ingresos", "naturaleza": "CREDITO"}
-    assert "4199" in {c["codigo"] for c in cliente.get("/catalogo/cuentas").json()}
+    assert "4199" in {c["codigo"] for c in cliente.get("/catalogo/cuentas", headers=CONTADOR).json()}
 
 
 def test_crear_cuenta_repetida_409(cliente):
-    r = cliente.post("/catalogo/cuentas", json={"codigo": "4135", "nombre": "Otra", "naturaleza": "CREDITO"})
+    cuerpo = {"codigo": "4135", "nombre": "Otra", "naturaleza": "CREDITO"}
+    r = cliente.post("/catalogo/cuentas", json=cuerpo, headers=CONTADOR)
     assert r.status_code == 409
     assert "4135" in r.json()["detail"]
 
@@ -70,11 +76,12 @@ def test_crear_cuenta_repetida_409(cliente):
     ],
 )
 def test_crear_cuenta_invalida_422(cliente, cuerpo):
-    assert cliente.post("/catalogo/cuentas", json=cuerpo).status_code == 422
+    assert cliente.post("/catalogo/cuentas", json=cuerpo, headers=CONTADOR).status_code == 422
 
 
 def test_crear_cuenta_invalida_devuelve_los_errores(cliente):
-    r = cliente.post("/catalogo/cuentas", json={"codigo": "41A9", "nombre": " ", "naturaleza": "CREDITO"})
+    cuerpo = {"codigo": "41A9", "nombre": " ", "naturaleza": "CREDITO"}
+    r = cliente.post("/catalogo/cuentas", json=cuerpo, headers=CONTADOR)
     assert len(r.json()["errores"]) == 2
 
 
@@ -86,19 +93,19 @@ def test_no_hay_borrado_de_cuentas(cliente):
 
 
 def test_listar_reglas_y_filtrar(cliente):
-    cliente.post("/reglas/R-4170-SERVICIOS/desactivar")
-    todas = cliente.get("/reglas")
+    cliente.post("/reglas/R-4170-SERVICIOS/desactivar", headers=CONTADOR)
+    todas = cliente.get("/reglas", headers=CONTADOR)
     assert todas.status_code == 200
     assert {r["codigo"] for r in todas.json()} >= {"R-4135-COMERCIO", "R-4170-SERVICIOS"}
 
-    activas = {r["codigo"] for r in cliente.get("/reglas", params={"activa": "true"}).json()}
-    inactivas = {r["codigo"] for r in cliente.get("/reglas", params={"activa": "false"}).json()}
+    activas = {r["codigo"] for r in cliente.get("/reglas", params={"activa": "true"}, headers=CONTADOR).json()}
+    inactivas = {r["codigo"] for r in cliente.get("/reglas", params={"activa": "false"}, headers=CONTADOR).json()}
     assert "R-4170-SERVICIOS" in inactivas and "R-4170-SERVICIOS" not in activas
     assert "R-4135-COMERCIO" in activas
 
 
 def test_obtener_regla(cliente):
-    r = cliente.get("/reglas/R-4145-TRANSPORTE")
+    r = cliente.get("/reglas/R-4145-TRANSPORTE", headers=CONTADOR)
     assert r.status_code == 200
     datos = r.json()
     assert datos["cuenta_ingreso"] == "4145"
@@ -107,21 +114,21 @@ def test_obtener_regla(cliente):
 
 
 def test_obtener_regla_inexistente_404(cliente):
-    assert cliente.get("/reglas/R-NO-EXISTE").status_code == 404
+    assert cliente.get("/reglas/R-NO-EXISTE", headers=CONTADOR).status_code == 404
 
 
 # --- POST /reglas -----------------------------------------------------------------------
 
 
 def test_crear_regla_201(cliente):
-    r = cliente.post("/reglas", json=_regla(palabras=("Abarrotes Finos", "abarrotes finos")))
+    r = cliente.post("/reglas", json=_regla(palabras=("Abarrotes Finos", "abarrotes finos")), headers=CONTADOR)
     assert r.status_code == 201
     datos = r.json()
     assert datos["codigo"] == "R-NUEVA"
     assert datos["palabras_clave"] == ["abarrotes finos"]
     assert datos["activa"] is True
     assert datos["advertencias"] == []
-    assert cliente.get("/reglas/R-NUEVA").status_code == 200
+    assert cliente.get("/reglas/R-NUEVA", headers=CONTADOR).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -135,7 +142,8 @@ def test_crear_regla_201(cliente):
     ],
 )
 def test_crear_regla_con_errores_422(cliente, cuerpo, fragmento):
-    r = cliente.post("/reglas", json=cuerpo, params={"confirmar": "true"})  # confirmar no salta errores
+    # confirmar no salta errores
+    r = cliente.post("/reglas", json=cuerpo, params={"confirmar": "true"}, headers=CONTADOR)
     assert r.status_code == 422
     assert any(fragmento in e for e in r.json()["errores"])
 
@@ -149,11 +157,11 @@ def test_crear_regla_con_errores_422(cliente, cuerpo, fragmento):
     ],
 )
 def test_crear_regla_cuerpo_mal_formado_422(cliente, cuerpo):
-    assert cliente.post("/reglas", json=cuerpo).status_code == 422
+    assert cliente.post("/reglas", json=cuerpo, headers=CONTADOR).status_code == 422
 
 
 def test_crear_regla_con_conflicto_sin_confirmar_409_y_no_guarda(cliente):
-    r = cliente.post("/reglas", json=_regla(palabras=("Flete", "abarrote")))
+    r = cliente.post("/reglas", json=_regla(palabras=("Flete", "abarrote")), headers=CONTADOR)
     assert r.status_code == 409
     (advertencia,) = r.json()["advertencias"]
     assert (advertencia["palabra"], advertencia["regla"], advertencia["cuenta"]) == (
@@ -162,14 +170,14 @@ def test_crear_regla_con_conflicto_sin_confirmar_409_y_no_guarda(cliente):
         "4145",
     )
     assert "R-4145-TRANSPORTE" in advertencia["mensaje"]
-    assert cliente.get("/reglas/R-NUEVA").status_code == 404
+    assert cliente.get("/reglas/R-NUEVA", headers=CONTADOR).status_code == 404
 
 
 def test_crear_regla_con_conflicto_confirmado_201_y_queda_en_historial(cliente):
-    r = cliente.post("/reglas", json=_regla(palabras=("flete",)), params={"confirmar": "true"})
+    r = cliente.post("/reglas", json=_regla(palabras=("flete",)), params={"confirmar": "true"}, headers=CONTADOR)
     assert r.status_code == 201
     assert r.json()["advertencias"][0]["regla"] == "R-4145-TRANSPORTE"
-    (entrada,) = cliente.get("/reglas/R-NUEVA/historial").json()
+    (entrada,) = cliente.get("/reglas/R-NUEVA/historial", headers=CONTADOR).json()
     assert entrada["accion"] == "CREAR"
     assert entrada["despues"]["advertencias_confirmadas"][0]["regla"] == "R-4145-TRANSPORTE"
 
@@ -182,68 +190,72 @@ def _edicion(cuenta="4135", palabras=("mercancia", "abarrote"), descripcion="Edi
 
 
 def test_editar_regla_200(cliente):
-    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion())
+    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(), headers=CONTADOR)
     assert r.status_code == 200
     assert r.json()["palabras_clave"] == ["mercancia", "abarrote"]
     assert r.json()["advertencias"] == []
-    assert [e["accion"] for e in cliente.get("/reglas/R-4135-COMERCIO/historial").json()] == ["EDITAR"]
+    historial = cliente.get("/reglas/R-4135-COMERCIO/historial", headers=CONTADOR).json()
+    assert [e["accion"] for e in historial] == ["EDITAR"]
 
 
 def test_editar_regla_con_el_mismo_codigo_en_el_cuerpo_200(cliente):
-    assert cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(codigo="R-4135-COMERCIO")).status_code == 200
+    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(codigo="R-4135-COMERCIO"), headers=CONTADOR)
+    assert r.status_code == 200
 
 
 def test_editar_regla_no_permite_cambiar_el_codigo_422(cliente):
-    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(codigo="R-OTRO"))
+    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(codigo="R-OTRO"), headers=CONTADOR)
     assert r.status_code == 422
     assert "no se puede cambiar" in r.json()["detail"]
-    assert cliente.get("/reglas/R-OTRO").status_code == 404
+    assert cliente.get("/reglas/R-OTRO", headers=CONTADOR).status_code == 404
 
 
 def test_editar_regla_inexistente_404(cliente):
-    assert cliente.put("/reglas/R-NO-EXISTE", json=_edicion()).status_code == 404
+    assert cliente.put("/reglas/R-NO-EXISTE", json=_edicion(), headers=CONTADOR).status_code == 404
 
 
 def test_editar_regla_con_errores_422(cliente):
-    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(cuenta="1105", palabras=()))
+    r = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(cuenta="1105", palabras=()), headers=CONTADOR)
     assert r.status_code == 422
     assert len(r.json()["errores"]) == 2
-    assert cliente.get("/reglas/R-4135-COMERCIO").json()["cuenta_ingreso"] == "4135"
+    assert cliente.get("/reglas/R-4135-COMERCIO", headers=CONTADOR).json()["cuenta_ingreso"] == "4135"
 
 
 def test_editar_regla_con_conflicto_409_y_luego_confirmado_200(cliente):
-    sin_confirmar = cliente.put("/reglas/R-4135-COMERCIO", json=_edicion(palabras=("mercancia", "flete")))
+    cuerpo = _edicion(palabras=("mercancia", "flete"))
+    sin_confirmar = cliente.put("/reglas/R-4135-COMERCIO", json=cuerpo, headers=CONTADOR)
     assert sin_confirmar.status_code == 409
     assert sin_confirmar.json()["advertencias"][0]["palabra"] == "flete"
-    assert "flete" not in cliente.get("/reglas/R-4135-COMERCIO").json()["palabras_clave"]
+    assert "flete" not in cliente.get("/reglas/R-4135-COMERCIO", headers=CONTADOR).json()["palabras_clave"]
 
     confirmada = cliente.put(
-        "/reglas/R-4135-COMERCIO", json=_edicion(palabras=("mercancia", "flete")), params={"confirmar": "true"}
+        "/reglas/R-4135-COMERCIO", json=_edicion(palabras=("mercancia", "flete")), params={"confirmar": "true"},
+        headers=CONTADOR,
     )
     assert confirmada.status_code == 200
-    assert "flete" in cliente.get("/reglas/R-4135-COMERCIO").json()["palabras_clave"]
+    assert "flete" in cliente.get("/reglas/R-4135-COMERCIO", headers=CONTADOR).json()["palabras_clave"]
 
 
 # --- activar / desactivar / historial --------------------------------------------------------
 
 
 def test_desactivar_y_activar_200(cliente):
-    r = cliente.post("/reglas/R-4135-COMERCIO/desactivar")
+    r = cliente.post("/reglas/R-4135-COMERCIO/desactivar", headers=CONTADOR)
     assert r.status_code == 200 and r.json()["activa"] is False
-    r = cliente.post("/reglas/R-4135-COMERCIO/activar")
+    r = cliente.post("/reglas/R-4135-COMERCIO/activar", headers=CONTADOR)
     assert r.status_code == 200 and r.json()["activa"] is True
-    historial = cliente.get("/reglas/R-4135-COMERCIO/historial")
+    historial = cliente.get("/reglas/R-4135-COMERCIO/historial", headers=CONTADOR)
     assert historial.status_code == 200
     assert [e["accion"] for e in historial.json()] == ["DESACTIVAR", "ACTIVAR"]
 
 
 @pytest.mark.parametrize("ruta", ["/reglas/R-NO-EXISTE/activar", "/reglas/R-NO-EXISTE/desactivar"])
 def test_activar_o_desactivar_inexistente_404(cliente, ruta):
-    assert cliente.post(ruta).status_code == 404
+    assert cliente.post(ruta, headers=CONTADOR).status_code == 404
 
 
 def test_historial_inexistente_404(cliente):
-    assert cliente.get("/reglas/R-NO-EXISTE/historial").status_code == 404
+    assert cliente.get("/reglas/R-NO-EXISTE/historial", headers=CONTADOR).status_code == 404
 
 
 # --- Base de datos caída: 503 en todos los endpoints -----------------------------------------
@@ -271,10 +283,10 @@ class RepositorioCatalogoCaido:
         ("get", "/reglas/R-X/historial", None),
     ],
 )
-def test_base_inaccesible_503(metodo, ruta, cuerpo):
+def test_base_inaccesible_503(metodo, ruta, cuerpo, usuarios_api):
     app.dependency_overrides[get_repositorio_catalogo] = RepositorioCatalogoCaido
     try:
-        kwargs = {"json": cuerpo} if cuerpo is not None else {}
+        kwargs = {"json": cuerpo, "headers": CONTADOR} if cuerpo is not None else {"headers": CONTADOR}
         r = getattr(TestClient(app), metodo)(ruta, **kwargs)
     finally:
         app.dependency_overrides.clear()
@@ -308,7 +320,7 @@ def _clasificar(cliente, xml=XML):
     r = cliente.post(
         "/facturas/clasificar",
         files={"archivo": ("factura.xml", xml, "application/xml")},
-        params={"usar_nlp": "false", "guardar": "false"},
+        params={"usar_nlp": "false", "guardar": "false"},headers=AUXILIAR,
     )
     assert r.status_code == 200, r.text
     return r.json()
@@ -320,13 +332,13 @@ def test_tras_un_cambio_la_siguiente_clasificacion_usa_las_reglas_nuevas(cliente
     assert _clasificar(cliente)["lineas"][0]["regla"] == "R-4135-COMERCIO"
     assert len(cargas) == 1  # la segunda clasificación usó la caché
 
-    assert cliente.post("/reglas/R-4135-COMERCIO/desactivar").status_code == 200
+    assert cliente.post("/reglas/R-4135-COMERCIO/desactivar", headers=CONTADOR).status_code == 200
     linea = _clasificar(cliente)["lineas"][0]
     assert linea["estado"] == "SIN_REGLA"
     assert len(cargas) == 2  # el cambio invalidó la caché
 
     nueva = _regla(codigo="R-MERCANCIA-SERVICIOS", cuenta="4145", palabras=("mercancia",))
-    assert cliente.post("/reglas", json=nueva).status_code == 201
+    assert cliente.post("/reglas", json=nueva, headers=CONTADOR).status_code == 201
     linea = _clasificar(cliente)["lineas"][0]
     assert linea["estado"] == "CLASIFICADA"
     assert (linea["regla"], linea["cuenta_ingreso"]) == ("R-MERCANCIA-SERVICIOS", "4145")
@@ -334,7 +346,8 @@ def test_tras_un_cambio_la_siguiente_clasificacion_usa_las_reglas_nuevas(cliente
 
 def test_crear_una_cuenta_tambien_invalida_la_cache(cliente, fuente_bd):
     _clasificar(cliente)
-    cliente.post("/catalogo/cuentas", json={"codigo": "4199", "nombre": "Otros", "naturaleza": "CREDITO"})
+    cuerpo = {"codigo": "4199", "nombre": "Otros", "naturaleza": "CREDITO"}
+    cliente.post("/catalogo/cuentas", json=cuerpo, headers=CONTADOR)
     _clasificar(cliente)
     assert len(fuente_bd) == 2
 
@@ -352,7 +365,7 @@ def test_clasificar_con_fuente_bd_y_base_caida_503(cliente, monkeypatch):
         r = cliente.post(
             "/facturas/clasificar",
             files={"archivo": ("factura.xml", XML, "application/xml")},
-            params={"usar_nlp": "false", "guardar": "false"},
+            params={"usar_nlp": "false", "guardar": "false"},headers=AUXILIAR,
         )
     finally:
         get_settings.cache_clear()

@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 
 from ..config import get_settings
 from ..domain.clasificador import clasificar, emparejar_linea
@@ -84,9 +85,10 @@ def procesar_carpeta(
     recursivo: bool = False,
     usar_nlp: bool = True,
     catalogo: CatalogoPUC | None = None,
+    raiz: Path | None = None,
 ) -> list[dict]:
     salida: list[dict] = []
-    for item in leer_carpeta(carpeta, recursivo):
+    for item in leer_carpeta(carpeta, recursivo, raiz):
         if item.factura is None:
             salida.append({"archivo": item.ruta.name, "error": item.error})
         else:

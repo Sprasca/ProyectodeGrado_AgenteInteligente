@@ -61,3 +61,41 @@ def test_attached_document_sin_invoice_lanza_error():
 </AttachedDocument>"""
     with pytest.raises(ParserUBLError, match="no contiene un Invoice"):
         parsear_xml(xml)
+
+
+# --- CUFE (cbc:UUID) ------------------------------------------------------------------------------
+
+CUFE = "a" * 32 + "b" * 32 + "c" * 32  # 96 caracteres, como un SHA-384 en hexadecimal
+
+
+def _con_cufe(xml: str) -> str:
+    """Agrega cbc:UUID al Invoice (también al que viene embebido en un AttachedDocument)."""
+    return xml.replace(
+        "<cbc:ID>FV-1001</cbc:ID>", f'<cbc:ID>FV-1001</cbc:ID><cbc:UUID schemeName="CUFE-SHA384">{CUFE}</cbc:UUID>'
+    )
+
+
+def test_extrae_el_cufe_del_invoice():
+    xml = _con_cufe((FIXTURES / "factura_comercio_contado.xml").read_text(encoding="utf-8"))
+    assert parsear_xml(xml).cufe == CUFE
+
+
+def test_extrae_el_cufe_del_invoice_dentro_de_attached_document():
+    adjunto = _con_cufe((FIXTURES / "attached_document_comercio.xml").read_text(encoding="utf-8"))
+    assert "<AttachedDocument" in adjunto and CUFE in adjunto
+    factura = parsear_xml(adjunto)
+    assert factura.cufe == CUFE
+    assert factura.numero == "FV-1001"
+
+
+def test_sin_cbc_uuid_el_cufe_es_none():
+    assert parsear_xml((FIXTURES / "factura_comercio_contado.xml").read_bytes()).cufe is None
+    assert parsear_xml((FIXTURES / "attached_document_comercio.xml").read_bytes()).cufe is None
+
+
+def test_cbc_uuid_vacio_es_none():
+    xml = (FIXTURES / "factura_comercio_contado.xml").read_text(encoding="utf-8").replace(
+        "<cbc:ID>FV-1001</cbc:ID>", "<cbc:ID>FV-1001</cbc:ID><cbc:UUID>  </cbc:UUID>"
+    )
+    assert parsear_xml(xml).cufe is None
+

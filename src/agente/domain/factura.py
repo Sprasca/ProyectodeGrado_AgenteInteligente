@@ -61,6 +61,7 @@ class Factura:
     total_con_impuestos: Decimal  # TaxInclusiveAmount
     total_a_pagar: Decimal  # PayableAmount
     extras: dict[str, str] = field(default_factory=dict)
+    cufe: str | None = None  # cbc:UUID de la factura electrónica DIAN (si viene)
 
     @property
     def es_venta(self) -> bool:

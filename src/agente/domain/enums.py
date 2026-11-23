@@ -13,6 +13,13 @@ class CondicionPago(StrEnum):
     CREDITO = "CREDITO"
 
 
+class OrigenRegla(StrEnum):
+    """Quién creó la regla: la siembra desde data/puc o el contador desde la API."""
+
+    CSV = "csv"
+    CONTADOR = "contador"
+
+
 class AccionHistorial(StrEnum):
     """Cambios de una regla que quedan en historial_regla."""
 
@@ -35,3 +42,27 @@ class EstadoTransaccion(StrEnum):
     EN_ALERTA = "EN_ALERTA"
     APROBADA_CONTADOR = "APROBADA_CONTADOR"
     CORREGIDA_CONTADOR = "CORREGIDA_CONTADOR"
+    RECHAZADA = "RECHAZADA"  # estado final: el contador descartó la transacción
+
+
+class Rol(StrEnum):
+    """Rol de un usuario; sus permisos se definen en agente.api.permisos."""
+
+    CONTADOR = "CONTADOR"
+    AUXILIAR = "AUXILIAR"
+    ADMIN = "ADMIN"
+
+
+class TipoEvento(StrEnum):
+    """Hechos que quedan en evento_transaccion."""
+
+    RECIBIDA = "RECIBIDA"
+    CLASIFICADA = "CLASIFICADA"
+    APROBADA = "APROBADA"
+    CORREGIDA = "CORREGIDA"
+    RECHAZADA = "RECHAZADA"
+
+
+class TipoDocumento(StrEnum):
+    XML = "XML"
+    PDF = "PDF"

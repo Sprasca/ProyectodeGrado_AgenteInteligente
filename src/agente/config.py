@@ -33,6 +33,18 @@ class Settings:
         self.fuente_catalogo = obtener("FUENTE_CATALOGO", "bd").strip().lower()
         if self.fuente_catalogo not in FUENTES_CATALOGO:
             raise ValueError(f"FUENTE_CATALOGO debe ser 'bd' o 'csv', no {self.fuente_catalogo!r}.")
+        # Firma de los tokens JWT. Sin él la API no arranca (ver agente.api.autenticacion).
+        self.jwt_secreto = obtener("JWT_SECRETO", "").strip()
+        minutos = obtener("JWT_MINUTOS", "60").strip()
+        if not minutos.isdigit() or int(minutos) <= 0:
+            raise ValueError(f"JWT_MINUTOS debe ser un número entero positivo, no {minutos!r}.")
+        self.jwt_minutos = int(minutos)
+        # Orígenes (navegador) que pueden llamar la API, separados por comas. Vacío: ninguno.
+        self.cors_origenes = [o.strip().rstrip("/") for o in obtener("CORS_ORIGENES", "").split(",") if o.strip()]
+        if "*" in self.cors_origenes:
+            raise ValueError("CORS_ORIGENES no acepta '*': liste los orígenes permitidos, separados por comas.")
+        # /carpeta/procesar solo lee carpetas dentro de este directorio.
+        self.directorio_entrada = Path(obtener("DIRECTORIO_ENTRADA", str(self.directorio_facturas)))
 
 
 @lru_cache

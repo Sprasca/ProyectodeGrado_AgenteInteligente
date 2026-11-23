@@ -59,3 +59,27 @@ class CuentaDuplicadaError(ErrorDeDominio):
 
 class ReglaNoEncontradaError(ErrorDeDominio):
     """No existe una regla con ese código."""
+
+
+class UsuarioInvalidoError(DatosInvalidosError):
+    """Los datos del usuario tienen errores de validación."""
+
+
+class UsuarioDuplicadoError(ErrorDeDominio):
+    """Ya existe un usuario con ese nombre de usuario."""
+
+
+class UsuarioNoEncontradoError(ErrorDeDominio):
+    """No existe un usuario con ese id."""
+
+
+class UltimoAdministradorError(ErrorDeDominio):
+    """El cambio dejaría el sistema sin ningún ADMIN activo."""
+
+
+class MotivoInvalidoError(DatosInvalidosError):
+    """Falta el motivo de una acción del contador o es demasiado corto."""
+
+
+class RutaNoPermitidaError(ErrorDeDominio):
+    """La carpeta pedida está fuera de DIRECTORIO_ENTRADA."""
