@@ -33,7 +33,7 @@ def carpeta_permitida(ruta: str | None, entrada: Path, predeterminada: Path) -> 
     Sin ruta se usa la predeterminada (DIRECTORIO_FACTURAS), que también debe quedar dentro.
     """
     raiz = entrada.resolve()
-    destino = (raiz / ruta).resolve() if ruta else predeterminada.resolve()
+    destino = (raiz / ruta.replace("\\", "/")).resolve() if ruta else predeterminada.resolve()
     if not destino.is_relative_to(raiz):
         raise RutaNoPermitidaError(f"La carpeta {ruta or destino} está fuera del directorio de entrada permitido.")
     return destino
