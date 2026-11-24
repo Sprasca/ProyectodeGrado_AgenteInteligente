@@ -1,0 +1,157 @@
+"""Pruebas de contrato de RepositorioReportes (RF06, RF07).
+
+Las heredan test_repositorio_reportes_memoria.py (unitarias) y test_repositorio_reportes_sql.py
+(integración, sobre una base temporal). Cada módulo define los fixtures:
+- `transacciones`: el repositorio de transacciones que comparte el estado con `reportes`;
+- `reportes`: el repositorio de reportes;
+- `id_usuario`: un usuario que exista; `nuevo_numero`: números de factura únicos.
+"""
+
+import time
+import uuid
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
+
+from agente.domain.enums import EstadoReporte, EstadoTransaccion, Naturaleza, TipoEvento
+from agente.domain.errors import ConsolidacionBloqueadaError, ReporteNoEncontradoError, SinTransaccionesError
+
+JORNADA = date(2026, 11, 24)
+MOTIVO = "Motivo de prueba del contrato"
+
+
+def _aprobada(transacciones, catalogo, numero):
+    return transacciones.guardar(resultado_aprobado(catalogo, numero))
+
+
+def _corte(transacciones, *ids):
+    """El instante de recepción más reciente de esas transacciones (reloj de la propia base)."""
+    return max(transacciones.obtener(i).creado_en for i in ids)
+
+
+class ContratoReportes:
+    # --- qué entra en el reporte ------------------------------------------------------------------
+
+    def test_consolida_las_aprobadas_y_deja_fuera_las_rechazadas(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        automatica = _aprobada(transacciones, catalogo, nuevo_numero())
+        por_contador = transacciones.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        transacciones.aprobar(por_contador, usuario_id=id_usuario)
+        corregida = transacciones.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))
+        transacciones.corregir(corregida, partidas_correctas(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
+        rechazada = _aprobada(transacciones, catalogo, nuevo_numero())
+        transacciones.rechazar(rechazada, motivo=MOTIVO, usuario_id=id_usuario)
+
+        corte = _corte(transacciones, automatica, por_contador, corregida, rechazada)
+        reporte = reportes.consolidar(corte=corte, fecha_jornada=JORNADA, usuario_id=id_usuario)
+
+        assert reporte.estado is EstadoReporte.CONSOLIDADO
+        assert (reporte.fecha_jornada, reporte.corte) == (JORNADA, corte)
+        assert set(reporte.transacciones) == {automatica, por_contador, corregida}
+        assert reporte.numero_transacciones == 3
+        assert reporte.total_debito == reporte.total_credito > 0
+        assert reporte.valor_total == sum(transacciones.obtener(i).valor_total for i in reporte.transacciones)
+        for id_ in reporte.transacciones:
+            assert transacciones.obtener(id_).reporte_id == reporte.id
+        assert transacciones.obtener(rechazada).reporte_id is None
+        assert transacciones.obtener(rechazada).estado is EstadoTransaccion.RECHAZADA
+
+    def test_agrupa_por_codigo_y_subtotaliza_por_cuenta(self, transacciones, reportes, catalogo, nuevo_numero):
+        ids = [_aprobada(transacciones, catalogo, nuevo_numero()) for _ in range(2)]
+        reporte = reportes.consolidar(corte=_corte(transacciones, *ids), fecha_jornada=JORNADA)
+
+        esperado: dict[str, list[Decimal]] = {}
+        for id_ in ids:
+            for p in transacciones.obtener(id_).partidas:
+                totales = esperado.setdefault(p.cuenta, [Decimal(0), Decimal(0)])
+                totales[0 if p.naturaleza is Naturaleza.DEBITO else 1] += p.valor
+        assert {m.codigo: [m.debito, m.credito] for m in reporte.movimientos} == esperado
+        assert [m.codigo for m in reporte.movimientos] == sorted(esperado)
+        for subtotal in reporte.subtotales:
+            del_mismo = [m for m in reporte.movimientos if m.codigo[:4] == subtotal.cuenta]
+            assert subtotal.debito == sum((m.debito for m in del_mismo), Decimal(0))
+            assert subtotal.credito == sum((m.credito for m in del_mismo), Decimal(0))
+        assert sum(s.debito for s in reporte.subtotales) == reporte.total_debito
+
+    def test_lo_recibido_despues_del_corte_queda_para_el_siguiente_reporte(
+        self, transacciones, reportes, catalogo, nuevo_numero
+    ):
+        antes = _aprobada(transacciones, catalogo, nuevo_numero())
+        corte = _corte(transacciones, antes)
+        time.sleep(0.02)  # que el reloj avance: lo siguiente se recibe estrictamente después del corte
+        despues = _aprobada(transacciones, catalogo, nuevo_numero())
+        transacciones.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero()))  # alerta posterior al corte
+
+        reporte = reportes.consolidar(corte=corte, fecha_jornada=JORNADA)
+        assert reporte.transacciones == (antes,)
+        assert transacciones.obtener(despues).reporte_id is None
+
+    # --- bloqueos y reporte vacío -----------------------------------------------------------------
+
+    def test_una_alerta_sin_resolver_hasta_el_corte_bloquea_y_no_guarda_nada(
+        self, transacciones, reportes, catalogo, nuevo_numero
+    ):
+        aprobada = _aprobada(transacciones, catalogo, nuevo_numero())
+        alertas = [transacciones.guardar(resultado_alerta_con_asiento(catalogo, nuevo_numero())) for _ in range(2)]
+        with pytest.raises(ConsolidacionBloqueadaError, match="hay 2 transacción") as error:
+            reportes.consolidar(corte=_corte(transacciones, aprobada, *alertas), fecha_jornada=JORNADA)
+        assert error.value.pendientes == 2
+        assert reportes.listar() == []
+        assert transacciones.obtener(aprobada).reporte_id is None
+        assert [e.tipo for e in transacciones.eventos(aprobada)] == [TipoEvento.RECIBIDA, TipoEvento.CLASIFICADA]
+
+    def test_sin_transacciones_no_se_crea_un_reporte_vacio(self, transacciones, reportes, catalogo, nuevo_numero):
+        rechazada = _aprobada(transacciones, catalogo, nuevo_numero())
+        transacciones.rechazar(rechazada, motivo=MOTIVO)
+        with pytest.raises(SinTransaccionesError, match="reporte vacío"):
+            reportes.consolidar(corte=_corte(transacciones, rechazada), fecha_jornada=JORNADA)
+        assert reportes.listar() == []
+
+    # --- unicidad y trazabilidad ------------------------------------------------------------------
+
+    def test_una_transaccion_queda_en_un_solo_reporte(self, transacciones, reportes, catalogo, nuevo_numero):
+        primera = _aprobada(transacciones, catalogo, nuevo_numero())
+        uno = reportes.consolidar(corte=_corte(transacciones, primera), fecha_jornada=JORNADA)
+        with pytest.raises(SinTransaccionesError):
+            reportes.consolidar(corte=_corte(transacciones, primera), fecha_jornada=JORNADA)
+        segunda = _aprobada(transacciones, catalogo, nuevo_numero())
+        dos = reportes.consolidar(corte=_corte(transacciones, segunda), fecha_jornada=JORNADA)
+        assert (uno.transacciones, dos.transacciones) == ((primera,), (segunda,))
+        assert {r.id for r in reportes.listar()} == {uno.id, dos.id}
+
+    def test_eventos_con_usuario_y_en_cada_transaccion(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA, usuario_id=id_usuario)
+
+        (evento,) = reportes.eventos(reporte.id)
+        assert (evento.tipo, evento.usuario_id) == (EstadoReporte.CONSOLIDADO, id_usuario)
+        assert evento.fecha is not None
+        assert evento.despues["numero_transacciones"] == 1
+        consolidada = transacciones.eventos(id_)[-1]
+        assert (consolidada.tipo, consolidada.usuario_id) == (TipoEvento.CONSOLIDADA, id_usuario)
+        assert consolidada.despues == {"reporte_id": str(reporte.id), "fecha_jornada": JORNADA.isoformat()}
+
+    def test_el_cierre_programado_consolida_sin_usuario(self, transacciones, reportes, catalogo, nuevo_numero):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA, usuario_id=None)
+        assert reportes.eventos(reporte.id)[0].usuario_id is None
+        assert transacciones.eventos(id_)[-1].usuario_id is None
+
+    # --- consulta ------------------------------------------------------------------------------------
+
+    def test_obtener_y_listar_por_estado(self, transacciones, reportes, catalogo, nuevo_numero):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        assert reportes.obtener(reporte.id) == reporte
+        assert [r.id for r in reportes.listar(EstadoReporte.CONSOLIDADO)] == [reporte.id]
+        assert reportes.listar(EstadoReporte.EXPORTADO) == []
+
+    def test_reporte_inexistente(self, reportes):
+        assert reportes.obtener(uuid.uuid4()) is None
+        with pytest.raises(ReporteNoEncontradoError):
+            reportes.eventos(uuid.uuid4())

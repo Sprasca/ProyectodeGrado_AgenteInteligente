@@ -147,3 +147,23 @@ def base_temporal(fabrica_bd, monkeypatch):
         with administracion.connect() as conexion:
             conexion.execute(text(f'DROP DATABASE IF EXISTS "{nombre}" WITH (FORCE)'))
         administracion.dispose()
+
+
+@pytest.fixture
+def bd_sembrada(base_temporal):
+    """
+    Base temporal migrada a head y sembrada con data/puc: para las pruebas que consolidan reportes, que toman
+    TODAS las transacciones aprobadas sin reporte y por eso no pueden correr sobre la base de quien las ejecuta.
+    Devuelve una fábrica de sesiones.
+    """
+    from alembic import command
+    from alembic_pruebas import configuracion_alembic
+
+    from agente.infrastructure.db.repositorio import sembrar_desde_csv
+
+    command.upgrade(configuracion_alembic(), "head")
+    fabrica = crear_sessionmaker(get_settings().database_url, connect_timeout=3)
+    sembrar_desde_csv(get_settings().directorio_puc, fabrica_sesiones=fabrica)
+    yield fabrica
+    fabrica.kw["bind"].dispose()
+
