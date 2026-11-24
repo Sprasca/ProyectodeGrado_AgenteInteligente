@@ -29,7 +29,7 @@ from fabricas import (
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal
-from agente.domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from agente.domain.errors import (
     AsientoInvalidoError,
     CuentaNoExisteError,
@@ -466,3 +466,22 @@ class ContratoRepositorio:
         primera = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         segunda = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         assert repo.obtener(primera).cufe is None and repo.obtener(segunda).cufe is None
+
+    # --- canal de llegada ----------------------------------------------------------------------
+
+    def test_recepcion_automatica_registra_canal_carpeta_y_usuario_nulo(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()), canal=CanalRecepcion.CARPETA)
+        recibida = repo.eventos(id_)[0]
+        assert (recibida.tipo, recibida.usuario_id) == (TipoEvento.RECIBIDA, None)
+        assert recibida.despues["canal"] == "carpeta"
+
+    def test_carga_por_api_registra_canal_api(self, repo, nuevo_numero, catalogo, id_usuario):
+        resultado = resultado_aprobado(catalogo, nuevo_numero())
+        id_ = repo.guardar(resultado, usuario_id=id_usuario, canal=CanalRecepcion.API)
+        recibida = repo.eventos(id_)[0]
+        assert (recibida.usuario_id, recibida.despues["canal"]) == (id_usuario, "api")
+
+    def test_sin_canal_queda_nulo(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        assert repo.eventos(id_)[0].despues["canal"] is None
+

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
 from ...domain.documento import DocumentoOriginal
-from ...domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
 from ...domain.resultado import ResultadoClasificacion
@@ -93,10 +93,12 @@ class RepositorioTransacciones(Protocol):
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         """
-        Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id) y
-        CLASIFICADA (automático). FacturaDuplicadaError si el número o el CUFE ya existen.
+        Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id, que es
+        None en la recepción automática, y con el canal de llegada) y CLASIFICADA (automático).
+        FacturaDuplicadaError si el número o el CUFE ya existen.
         """
         ...
 
@@ -176,10 +178,15 @@ def partidas_desde_json(datos: Sequence[dict[str, str]]) -> tuple[Partida, ...]:
     )
 
 
-def datos_recepcion(resultado: ResultadoClasificacion, documento: DocumentoOriginal | None = None) -> dict[str, Any]:
-    """Lo que se recibió: identificación de la factura y huella del archivo original."""
+def datos_recepcion(
+    resultado: ResultadoClasificacion,
+    documento: DocumentoOriginal | None = None,
+    canal: CanalRecepcion | None = None,
+) -> dict[str, Any]:
+    """Lo que se recibió, por qué canal, y la huella del archivo original."""
     factura = resultado.factura
     datos: dict[str, Any] = {
+        "canal": CanalRecepcion(canal).value if canal is not None else None,
         "numero_factura": factura.numero,
         "cufe": factura.cufe,
         "fecha": factura.fecha.isoformat(),
@@ -312,6 +319,7 @@ class RepositorioSQL:
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         factura = resultado.factura
         duplicada = factura_duplicada(factura.numero)
@@ -355,7 +363,7 @@ class RepositorioSQL:
                             recibido_en=datetime.now(UTC),
                         )
                     )
-                recepcion = datos_recepcion(resultado, documento)
+                recepcion = datos_recepcion(resultado, documento, canal)
                 sesion.add(_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
                 sesion.add(_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()

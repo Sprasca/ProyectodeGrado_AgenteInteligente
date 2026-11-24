@@ -66,3 +66,10 @@ class TipoEvento(StrEnum):
 class TipoDocumento(StrEnum):
     XML = "XML"
     PDF = "PDF"
+
+
+class CanalRecepcion(StrEnum):
+    """Por dónde llegó una factura: carga manual por la API o recepción automática en la carpeta (RF01)."""
+
+    API = "api"
+    CARPETA = "carpeta"

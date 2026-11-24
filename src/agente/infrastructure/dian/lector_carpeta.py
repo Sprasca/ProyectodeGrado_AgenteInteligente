@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...config import get_settings
+from ...domain.enums import TipoDocumento
 from ...domain.errors import RutaNoPermitidaError
 from ...domain.factura import Factura
-from .lector_pdf import factura_desde_pdf
-from .parser import parsear_xml
+from .documentos import leer_documento, tipo_por_nombre
 
 EXTENSIONES = {".xml", ".pdf"}
 
@@ -20,10 +20,7 @@ class ArchivoLeido:
 
 
 def leer_factura(ruta: Path) -> Factura:
-    contenido = ruta.read_bytes()
-    if ruta.suffix.lower() == ".pdf":
-        return factura_desde_pdf(contenido)
-    return parsear_xml(contenido)
+    return leer_documento(ruta.read_bytes(), tipo_por_nombre(ruta.name) or TipoDocumento.XML)
 
 
 def carpeta_permitida(ruta: str | None, entrada: Path, predeterminada: Path) -> Path:

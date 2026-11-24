@@ -8,7 +8,7 @@ from itertools import count
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal
-from agente.domain.enums import EstadoTransaccion, TipoEvento
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
 from agente.domain.resultado import ResultadoClasificacion
@@ -59,6 +59,7 @@ class RepositorioMemoria:
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         factura = resultado.factura
         if any(t.numero_factura == factura.numero for t in self._por_id.values()):
@@ -85,7 +86,7 @@ class RepositorioMemoria:
         self._por_id[registro.id] = registro
         if documento is not None:
             self._documentos[registro.id] = replace(documento, recibido_en=datetime.now(UTC))
-        recepcion = datos_recepcion(resultado, documento)
+        recepcion = datos_recepcion(resultado, documento, canal)
         self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion)
         self._registrar(registro.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado))
         return registro.id
