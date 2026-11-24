@@ -19,19 +19,25 @@ from ..application.clasificar_con_nlp import (
     procesar_carpeta,
 )
 from ..application.registrar_documento import clasificar_documento, guardar_documento
+from ..application.reportes import consolidar_reporte, exportar_reporte
 from ..config import get_settings
 from ..domain.asiento import Partida
 from ..domain.documento import DocumentoOriginal
-from ..domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, Rol, TipoDocumento
+from ..domain.enums import CanalRecepcion, EstadoReporte, EstadoTransaccion, Naturaleza, Rol, TipoDocumento
 from ..domain.errors import (
     AsientoInvalidoError,
     ConflictoReglaError,
+    ConsolidacionBloqueadaError,
+    ConsolidacionInconsistenteError,
     CuentaDuplicadaError,
     CuentaNoExisteError,
     DatosInvalidosError,
+    ExportacionFallidaError,
     FacturaDuplicadaError,
     ReglaNoEncontradaError,
+    ReporteNoEncontradoError,
     RutaNoPermitidaError,
+    SinTransaccionesError,
     TransaccionNoEncontradaError,
     TransicionInvalidaError,
     UltimoAdministradorError,
@@ -40,6 +46,7 @@ from ..domain.errors import (
 )
 from ..domain.puc import CatalogoPUC, ReglaIngreso
 from ..infrastructure.db.catalogo import ReglaGuardada, RepositorioCatalogo, RepositorioCatalogoSQL
+from ..infrastructure.db.reportes import RepositorioReportes, RepositorioReportesSQL
 from ..infrastructure.db.session import fabrica_compartida
 from ..infrastructure.db.transacciones import (
     CuentaNoSembradaError,
@@ -94,6 +101,14 @@ def get_repositorio_catalogo() -> RepositorioCatalogo:
 RepoCatalogo = Annotated[RepositorioCatalogo, Depends(get_repositorio_catalogo)]
 
 
+def get_repositorio_reportes() -> RepositorioReportes:
+    """Reportes diarios en PostgreSQL. Las pruebas lo reemplazan con app.dependency_overrides."""
+    return RepositorioReportesSQL(fabrica_compartida())
+
+
+RepoReportes = Annotated[RepositorioReportes, Depends(get_repositorio_reportes)]
+
+
 def _manejador(codigo: int):
     def manejar(_: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=codigo, content={"detail": str(exc)})
@@ -114,6 +129,17 @@ app.add_exception_handler(UsuarioDuplicadoError, _manejador(409))
 app.add_exception_handler(UsuarioNoEncontradoError, _manejador(404))
 app.add_exception_handler(UltimoAdministradorError, _manejador(409))
 app.add_exception_handler(RutaNoPermitidaError, _manejador(403))
+app.add_exception_handler(ReporteNoEncontradoError, _manejador(404))
+app.add_exception_handler(SinTransaccionesError, _manejador(409))
+# Errores de integridad del sistema (RF06 3.a, RF07 anomalía 4): no los resuelve el usuario.
+app.add_exception_handler(ConsolidacionInconsistenteError, _manejador(500))
+app.add_exception_handler(ExportacionFallidaError, _manejador(500))
+
+
+@app.exception_handler(ConsolidacionBloqueadaError)
+def _consolidacion_bloqueada(_: Request, exc: ConsolidacionBloqueadaError) -> JSONResponse:
+    """RF06 1.a: informa el número de transacciones EN_ALERTA pendientes."""
+    return JSONResponse(status_code=409, content={"detail": str(exc), "pendientes": exc.pendientes})
 
 
 @app.exception_handler(DatosInvalidosError)
@@ -156,6 +182,12 @@ class SolicitudAprobacion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     motivo: str | None = None
+
+
+class SolicitudAnulacion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    motivo: str  # al menos 10 caracteres (si no, 422)
 
 
 class CuentaEntrada(BaseModel):
@@ -417,6 +449,71 @@ def desactivar_regla(codigo: str, usuario: UsuarioAutorizado, repositorio: RepoC
 @app.get("/reglas/{codigo}/historial", dependencies=[Autorizado])
 def historial_regla(codigo: str, repositorio: RepoCatalogo):
     return jsonable_encoder(repositorio.historial(codigo))
+
+
+# --- Reportes de transacciones diarias (RF06, RF07) ------------------------------------------
+
+
+@app.post("/reportes/consolidar", status_code=status.HTTP_201_CREATED)
+def consolidar(usuario: UsuarioAutorizado, reportes: RepoReportes):
+    """
+    Cierra la jornada: consolida lo recibido hasta ahora (hora de Colombia) en un reporte CONSOLIDADO.
+    Alertas sin resolver → 409 con "pendientes". Nada que consolidar → 409 (no se crea un reporte vacío).
+    Débitos ≠ créditos → 500 (error de integridad).
+    """
+    return jsonable_encoder(consolidar_reporte(reportes, usuario_id=usuario.id))
+
+
+@app.get("/reportes", dependencies=[Autorizado])
+def listar_reportes(reportes: RepoReportes, estado: EstadoReporte | None = None):
+    return jsonable_encoder(reportes.listar(estado))
+
+
+@app.get("/reportes/{id_reporte}", dependencies=[Autorizado])
+def obtener_reporte(id_reporte: uuid.UUID, reportes: RepoReportes):
+    """Totales por cuenta y subcuenta, número de transacciones y valor total (RF07 paso 2)."""
+    reporte = reportes.obtener(id_reporte)
+    if reporte is None:
+        raise HTTPException(404, f"No existe el reporte {id_reporte}.")
+    return jsonable_encoder(reporte)
+
+
+@app.get("/reportes/{id_reporte}/eventos", dependencies=[Autorizado])
+def eventos_reporte(id_reporte: uuid.UUID, reportes: RepoReportes):
+    """Cambios de estado: quién (null si fue el cierre programado), cuándo y por qué."""
+    return jsonable_encoder(reportes.eventos(id_reporte))
+
+
+@app.post("/reportes/{id_reporte}/exportar")
+def exportar(id_reporte: uuid.UUID, usuario: UsuarioAutorizado, reportes: RepoReportes):
+    """
+    El contador autoriza y en el mismo paso se genera el XML: CONSOLIDADO → EXPORTADO.
+    Ya exportado, anulado o con transacciones no aprobadas → 409. Falla la generación → 500 y sigue CONSOLIDADO.
+    """
+    return jsonable_encoder(exportar_reporte(reportes, id_reporte, usuario_id=usuario.id))
+
+
+@app.get("/reportes/{id_reporte}/xml", dependencies=[Autorizado])
+def descargar_xml(id_reporte: uuid.UUID, reportes: RepoReportes) -> Response:
+    """El XML exportado, para cargarlo en el ERP. Su SHA-256 va en la cabecera X-Contenido-SHA256."""
+    archivo = reportes.archivo(id_reporte)
+    if archivo is None:
+        raise HTTPException(404, f"El reporte {id_reporte} no ha sido exportado.")
+    return Response(
+        content=archivo.contenido,
+        media_type="application/xml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{archivo.nombre}"',
+            "X-Contenido-SHA256": archivo.sha256,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post("/reportes/{id_reporte}/anular")
+def anular(id_reporte: uuid.UUID, solicitud: SolicitudAnulacion, usuario: UsuarioAutorizado, reportes: RepoReportes):
+    """CONSOLIDADO → ANULADO con motivo (mínimo 10 caracteres). Libera sus transacciones. EXPORTADO → 409."""
+    return jsonable_encoder(reportes.anular(id_reporte, motivo=solicitud.motivo, usuario_id=usuario.id))
 
 
 # --- Usuarios (solo ADMIN) -------------------------------------------------------------------

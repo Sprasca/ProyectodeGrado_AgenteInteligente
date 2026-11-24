@@ -23,11 +23,23 @@ class Permiso(StrEnum):
     RESOLVER_TRANSACCIONES = "RESOLVER_TRANSACCIONES"  # aprobar, corregir, rechazar
     ADMINISTRAR_CATALOGO = "ADMINISTRAR_CATALOGO"  # crear cuentas; crear, editar, activar y desactivar reglas
     ADMINISTRAR_USUARIOS = "ADMINISTRAR_USUARIOS"
+    CONSOLIDAR_REPORTES = "CONSOLIDAR_REPORTES"  # cerrar la jornada (RF06)
+    EXPORTAR_REPORTES = "EXPORTAR_REPORTES"  # autorizar y exportar en un solo paso (RF07)
+    ANULAR_REPORTES = "ANULAR_REPORTES"  # anular un reporte CONSOLIDADO (ampliación del manual)
 
 
 PERMISOS_POR_ROL: dict[Rol, frozenset[Permiso]] = {
-    Rol.CONTADOR: frozenset({Permiso.LEER, Permiso.RESOLVER_TRANSACCIONES, Permiso.ADMINISTRAR_CATALOGO}),
-    Rol.AUXILIAR: frozenset({Permiso.LEER, Permiso.CARGAR_FACTURAS}),
+    Rol.CONTADOR: frozenset(
+        {
+            Permiso.LEER,
+            Permiso.RESOLVER_TRANSACCIONES,
+            Permiso.ADMINISTRAR_CATALOGO,
+            Permiso.CONSOLIDAR_REPORTES,
+            Permiso.EXPORTAR_REPORTES,
+            Permiso.ANULAR_REPORTES,
+        }
+    ),
+    Rol.AUXILIAR: frozenset({Permiso.LEER, Permiso.CARGAR_FACTURAS, Permiso.CONSOLIDAR_REPORTES}),
     # El ADMIN solo administra usuarios: no lee ni resuelve transacciones ni edita reglas.
     Rol.ADMIN: frozenset({Permiso.ADMINISTRAR_USUARIOS}),
 }
@@ -54,6 +66,14 @@ PERMISO_POR_RUTA: dict[tuple[str, str], Permiso] = {
     ("PUT", "/reglas/{codigo}"): Permiso.ADMINISTRAR_CATALOGO,
     ("POST", "/reglas/{codigo}/activar"): Permiso.ADMINISTRAR_CATALOGO,
     ("POST", "/reglas/{codigo}/desactivar"): Permiso.ADMINISTRAR_CATALOGO,
+    # Reportes diarios (RF06, RF07). La descarga del XML es lectura: el auxiliar lo carga en el ERP.
+    ("POST", "/reportes/consolidar"): Permiso.CONSOLIDAR_REPORTES,
+    ("GET", "/reportes"): Permiso.LEER,
+    ("GET", "/reportes/{id_reporte}"): Permiso.LEER,
+    ("GET", "/reportes/{id_reporte}/eventos"): Permiso.LEER,
+    ("GET", "/reportes/{id_reporte}/xml"): Permiso.LEER,
+    ("POST", "/reportes/{id_reporte}/exportar"): Permiso.EXPORTAR_REPORTES,
+    ("POST", "/reportes/{id_reporte}/anular"): Permiso.ANULAR_REPORTES,
     # Usuarios
     ("GET", "/usuarios"): Permiso.ADMINISTRAR_USUARIOS,
     ("POST", "/usuarios"): Permiso.ADMINISTRAR_USUARIOS,

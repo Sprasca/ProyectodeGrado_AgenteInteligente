@@ -67,14 +67,15 @@ def exportar_reporte(
     id_reporte: uuid.UUID,
     *,
     usuario_id: int | None,
-    generar: GeneradorArchivo = generar_xml_reporte,
+    generar: GeneradorArchivo | None = None,
 ) -> ReporteDiario:
     """
     RF07: el contador autoriza y en el mismo paso se genera el XML; el reporte pasa a EXPORTADO.
     Si la generación falla, el reporte sigue CONSOLIDADO y queda un ERROR en el log (anomalía 4).
+    Sin `generar`, el XML versionado de agente.infrastructure.erp.xml_reporte.
     """
     try:
-        reporte = repositorio.exportar(id_reporte, usuario_id=usuario_id, generar=generar)
+        reporte = repositorio.exportar(id_reporte, usuario_id=usuario_id, generar=generar or generar_xml_reporte)
     except ExportacionFallidaError as exc:
         log.error("ALERTA TÉCNICA: exportación del reporte %s fallida (usuario %s): %s", id_reporte, usuario_id, exc)
         raise

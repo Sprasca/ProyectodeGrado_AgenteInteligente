@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from repositorio_catalogo_memoria import RepositorioCatalogoMemoria
 from repositorio_memoria import RepositorioMemoria
+from repositorio_reportes_memoria import RepositorioReportesMemoria
 
-from agente.api.main import app, get_repositorio, get_repositorio_catalogo
+from agente.api.main import app, get_repositorio, get_repositorio_catalogo, get_repositorio_reportes
 from agente.application.clasificar_con_nlp import invalidar_catalogo
 
 
@@ -17,5 +18,9 @@ def entorno_api(catalogo, usuarios_api):
     reglas = RepositorioCatalogoMemoria.desde_catalogo(catalogo, al_cambiar=invalidar_catalogo)
     app.dependency_overrides[get_repositorio] = lambda: transacciones
     app.dependency_overrides[get_repositorio_catalogo] = lambda: reglas
-    yield SimpleNamespace(cliente=TestClient(app), transacciones=transacciones, reglas=reglas, usuarios=usuarios_api)
+    reportes = RepositorioReportesMemoria(transacciones)
+    app.dependency_overrides[get_repositorio_reportes] = lambda: reportes
+    yield SimpleNamespace(
+        cliente=TestClient(app), transacciones=transacciones, reglas=reglas, usuarios=usuarios_api, reportes=reportes
+    )
     app.dependency_overrides.clear()
