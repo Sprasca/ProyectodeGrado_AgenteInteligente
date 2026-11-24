@@ -150,6 +150,9 @@ class RepositorioReportesMemoria:
         )
         exportado = datos_exportacion(archivo)
         self._registrar(id_reporte, EstadoReporte.EXPORTADO, usuario_id, despues=exportado)
+        vinculo = datos_vinculo(id_reporte, reporte.fecha_jornada, reporte.tipo, reporte.numero)
+        for t in incluidas:
+            self.transacciones._registrar(t.id, TipoEvento.EXPORTADA, usuario_id, despues=vinculo | exportado)
         return self._reportes[id_reporte]
 
     def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:

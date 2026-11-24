@@ -312,8 +312,18 @@ class ContratoReportes:
         assert (evento.tipo, evento.usuario_id) == (EstadoReporte.EXPORTADO, id_usuario)
         assert evento.despues == {"archivo": archivo.nombre, "bytes": len(contenido), "sha256": archivo.sha256}
 
+    def test_exportar_deja_el_evento_exportada_en_cada_transaccion(self, id_usuario):
+        ids = [self.aprobada() for _ in range(2)]
+        reporte = self.parcial()
+        exportado = self.r.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<x/>")
+        for id_ in ids:
+            evento = self.t.eventos(id_)[-1]
+            assert (evento.tipo, evento.usuario_id) == (TipoEvento.EXPORTADA, id_usuario)
+            assert evento.despues["reporte_id"] == str(reporte.id)
+            assert evento.despues["sha256"] == exportado.archivo_sha256
+
     def test_un_reporte_no_se_exporta_dos_veces(self, id_usuario):
-        self.aprobada()
+        id_ = self.aprobada()
         reporte = self.parcial()
         primero = self.r.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<uno/>")
         with pytest.raises(TransicionInvalidaError, match="no se exporta dos veces"):
@@ -321,9 +331,10 @@ class ContratoReportes:
         assert self.r.archivo(reporte.id).contenido == b"<uno/>"
         assert self.r.obtener(reporte.id) == primero
         assert [e.tipo for e in self.r.eventos(reporte.id)] == [EstadoReporte.CONSOLIDADO, EstadoReporte.EXPORTADO]
+        assert [e.tipo for e in self.t.eventos(id_)].count(TipoEvento.EXPORTADA) == 1
 
     def test_si_falla_la_generacion_el_reporte_sigue_consolidado(self, id_usuario):
-        self.aprobada()
+        id_ = self.aprobada()
         reporte = self.parcial()
 
         def falla(*_):
@@ -334,6 +345,7 @@ class ContratoReportes:
         assert self.r.obtener(reporte.id) == reporte
         assert self.r.archivo(reporte.id) is None
         assert [e.tipo for e in self.r.eventos(reporte.id)] == [EstadoReporte.CONSOLIDADO]
+        assert TipoEvento.EXPORTADA not in [e.tipo for e in self.t.eventos(id_)]
         # Se puede volver a intentar.
         reintento = self.r.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<ok/>")
         assert reintento.estado is EstadoReporte.EXPORTADO

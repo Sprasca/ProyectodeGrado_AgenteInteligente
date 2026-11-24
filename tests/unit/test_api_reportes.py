@@ -119,6 +119,9 @@ def test_exportar_y_descargar_el_xml(api):
         ("EXPORTADO", USUARIOS[C].id),
     ]
     assert eventos[-1]["despues"]["sha256"] == exportado["archivo_sha256"]
+    for id_ in reporte["transacciones"]:
+        ultimo = api.cliente.get(f"/transacciones/{id_}/eventos", headers=encabezados(A)).json()[-1]
+        assert (ultimo["tipo"], ultimo["usuario_id"]) == ("EXPORTADA", USUARIOS[C].id)
 
 
 def test_exportar_dos_veces_responde_409_y_no_cambia_el_archivo(api):

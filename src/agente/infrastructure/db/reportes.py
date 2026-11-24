@@ -91,7 +91,7 @@ class RepositorioReportes(Protocol):
         """
         RF07: el contador autoriza y, en el mismo paso y en la misma transacción de base de datos, se genera el
         archivo, se guarda en la base y el reporte pasa a EXPORTADO, con el autor, la fecha y hora y el SHA-256
-        del archivo (evento EXPORTADO).
+        del archivo (evento EXPORTADO; EXPORTADA en cada transacción, con el usuario que exportó).
         - TransicionInvalidaError si no está CONSOLIDADO (un EXPORTADO no se exporta dos veces) o si
           alguna de sus transacciones no está aprobada.
         - ExportacionFallidaError si `generar` falla (también si el XML no cumple el esquema XSD): el reporte
@@ -382,6 +382,9 @@ class RepositorioReportesSQL:
             fila.exportado_por = usuario_id
             exportado = datos_exportacion(archivo)
             sesion.add(_evento_reporte(fila.id, EstadoReporte.EXPORTADO, usuario_id, despues=exportado))
+            vinculo = datos_vinculo(fila.id, fila.fecha_jornada, TipoReporte(fila.tipo), fila.numero)
+            for t in incluidas:
+                sesion.add(nuevo_evento(t.id, TipoEvento.EXPORTADA, usuario_id, despues=vinculo | exportado))
             sesion.flush()
             return _a_reporte(fila, reporte.transacciones)
 

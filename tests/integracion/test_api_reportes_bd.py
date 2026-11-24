@@ -100,4 +100,5 @@ def test_ciclo_completo_consolidar_exportar_descargar(api_bd, catalogo):
             .where(EventoTransaccionModel.transaccion_id == ids[0])
             .order_by(EventoTransaccionModel.id)
         ).all()
-        assert tipos == ["RECIBIDA", "CLASIFICADA", "CONSOLIDADA"]  # la corrección rechazada no dejó evento
+        # La corrección rechazada no dejó evento; la exportación dejó EXPORTADA con el contador.
+        assert tipos == ["RECIBIDA", "CLASIFICADA", "CONSOLIDADA", "EXPORTADA"]
