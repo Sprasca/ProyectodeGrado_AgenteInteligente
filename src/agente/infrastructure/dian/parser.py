@@ -71,7 +71,7 @@ def _tercero(nodo: ET.Element | None) -> Tercero:
     return Tercero(nit=nit, nombre=nombre)
 
 
-def _extraer_invoice(raiz: ET.Element) -> ET.Element:
+def extraer_invoice(raiz: ET.Element) -> ET.Element:
     """Devuelve el nodo Invoice aunque venga embebido dentro de AttachedDocument."""
     tag = raiz.tag.split("}")[-1] if "}" in raiz.tag else raiz.tag
 
@@ -116,7 +116,7 @@ def parsear_xml(contenido: str | bytes) -> Factura:
     except ET.ParseError as exc:
         raise ParserUBLError(f"XML inválido: {exc}") from exc
 
-    inv = _extraer_invoice(raiz)
+    inv = extraer_invoice(raiz)
 
     numero = _texto(inv, "cbc:ID") or numero_provisional()
     # CUFE: cbc:UUID del Invoice (también cuando viene embebido en un AttachedDocument).

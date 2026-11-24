@@ -83,3 +83,7 @@ class MotivoInvalidoError(DatosInvalidosError):
 
 class RutaNoPermitidaError(ErrorDeDominio):
     """La carpeta pedida está fuera de DIRECTORIO_ENTRADA."""
+
+
+class DocumentoInvalidoError(ErrorDeDominio):
+    """El archivo no es un XML o PDF de factura completo y legible (no se reintenta)."""
