@@ -159,27 +159,53 @@ def test_script_una_vez_procesa_lo_que_ya_estaba_en_la_carpeta(entrada, fabrica_
         assert sesion.scalar(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero))
 
 
-def test_factura_registrada_que_no_se_alcanzo_a_mover_va_a_recibidos_sin_otra_transaccion(entrada, fabrica_bd, caplog):
-    """Caso límite: el proceso registró la factura pero se detuvo antes de moverla."""
+def test_factura_registrada_que_no_se_alcanzo_a_mover_va_a_recibidos_sin_otra_transaccion(
+    entrada, fabrica_bd, caplog, monkeypatch
+):
+    """Caso límite: la factura quedó registrada pero el archivo no se pudo mover (sigue en entrada/)."""
+    import agente.application.recepcion as recepcion
+
     numero = _numero()
     contenido = xml_factura(numero)
     receptor = receptor_por_defecto(_configuracion(entrada), usar_nlp=False)
-    (entrada / "sin-mover.xml").write_bytes(contenido)
-    assert receptor.recibir(entrada / "sin-mover.xml").recibido
+    ruta = entrada / "sin-mover.xml"
+    ruta.write_bytes(contenido)
 
-    # El mismo archivo, con el mismo nombre, vuelve a aparecer en la entrada.
-    (entrada / "sin-mover.xml").write_bytes(contenido)
+    mover = recepcion.shutil.move
+    monkeypatch.setattr(recepcion.shutil, "move", lambda *_: (_ for _ in ()).throw(PermissionError("bloqueado")))
+    receptor.recibir(ruta)
+    assert ruta.exists() and not (entrada / "recibidos" / "sin-mover.xml").exists()
+    monkeypatch.setattr(recepcion.shutil, "move", mover)
+
+    caplog.clear()  # el ERROR del movimiento fallido es el que se simuló
     with caplog.at_level(logging.WARNING, logger="agente.recepcion"):
-        recepcion = receptor.recibir(entrada / "sin-mover.xml")
-    assert recepcion.recibido and recepcion.destino.parent == entrada / "recibidos"
+        recuperada = receptor.recibir(ruta)
+    assert recuperada.recibido and recuperada.destino == entrada / "recibidos" / "sin-mover.xml"
     assert not (entrada / "no_recibidos").exists()
     assert any(r.levelno == logging.WARNING and "ya estaba registrada" in r.getMessage() for r in caplog.records)
-
-    # Con otro nombre es un duplicado.
-    (entrada / "otro-nombre.xml").write_bytes(contenido)
-    assert not receptor.recibir(entrada / "otro-nombre.xml").recibido
-    assert (entrada / "no_recibidos" / "otro-nombre.xml").exists()
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     with fabrica_bd() as sesion:
         ids = sesion.scalars(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero)).all()
-    assert len(ids) == 1 and recepcion.id_transaccion == ids[0]
+    assert len(ids) == 1 and recuperada.id_transaccion == ids[0]
+
+
+def test_el_mismo_archivo_copiado_dos_veces_seguidas_termina_en_recibidos_y_en_no_recibidos(
+    vigilante_en_marcha, fabrica_bd
+):
+    """Lo que se reportó: dos copias seguidas de FV-2001.xml en entrada/ (vigilante y base reales)."""
+    entrada = vigilante_en_marcha
+    numero = _numero()
+    contenido = xml_factura(numero)
+    (entrada / "FV-2001.xml").write_bytes(contenido)
+    assert _esperar((entrada / "recibidos" / "FV-2001.xml").exists)
+    (entrada / "FV-2001.xml").write_bytes(contenido)
+    no_recibido = entrada / "no_recibidos" / "FV-2001.xml"
+    assert _esperar(lambda: no_recibido.exists() and Path(str(no_recibido) + SUFIJO_MOTIVO).exists())
+
+    assert [p.name for p in (entrada / "recibidos").iterdir()] == ["FV-2001.xml"]
+    motivo = json.loads(Path(str(no_recibido) + SUFIJO_MOTIVO).read_text(encoding="utf-8"))
+    assert motivo["tipo_error"] == "FacturaDuplicadaError"
+    with fabrica_bd() as sesion:
+        ids = sesion.scalars(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero)).all()
+    assert len(ids) == 1

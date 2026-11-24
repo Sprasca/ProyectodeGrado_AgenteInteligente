@@ -8,14 +8,18 @@ Por cada archivo XML o PDF que aparece en el directorio de entrada:
 4. lo mueve a recibidos/ o, si falla, a no_recibidos/ junto con un <archivo>.motivo.json, y deja
    un registro de nivel ERROR (la "alerta técnica" del manual).
 
-Si el documento (por su SHA-256) ya lo registró la propia recepción automática con el mismo nombre de
-archivo, es una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo
-entre el registro y el movimiento): se mueve a recibidos/ con un WARNING, sin crear otra transacción.
-Cualquier otro SHA-256 repetido es un duplicado y va a no_recibidos/.
+Si el documento (por su SHA-256) ya está registrado se mira recibidos/:
+- si allí hay un archivo con ese mismo SHA-256, la factura ya se recibió y esta es otra copia: es un
+  duplicado y va a no_recibidos/ con su motivo y un ERROR;
+- si no lo hay y el registro lo hizo la propia recepción automática con el mismo nombre de archivo, es
+  una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo entre el
+  registro y el movimiento): va a recibidos/ con un WARNING, sin crear otra transacción.
+Cualquier otro SHA-256 repetido (p. ej. registrado por la API) es un duplicado y va a no_recibidos/.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
@@ -190,7 +194,11 @@ class ReceptorFacturas:
         return self._procesar(contenido, ruta.name, tipo)
 
     def _verificar_si_ya_se_registro(self, ruta: Path, tipo: TipoDocumento, contenido: bytes) -> None:
-        """_YaRegistrada si la recepción automática ya registró este mismo archivo (SHA-256 y nombre)."""
+        """
+        _YaRegistrada si la recepción automática ya registró este mismo archivo (SHA-256 y nombre) y no
+        hay en recibidos/ ningún archivo con ese SHA-256, es decir, si el registro quedó pero el archivo
+        no se alcanzó a mover. Si ya está en recibidos/, esta es otra copia: un duplicado real.
+        """
         if self._consultar_registro is None:
             return
         documento = DocumentoOriginal.recibido(ruta.name, tipo, contenido)
@@ -199,9 +207,27 @@ class ReceptorFacturas:
             registro is not None
             and registro.canal is CanalRecepcion.CARPETA
             and registro.nombre_archivo == documento.nombre_archivo
+            and not self._hay_en_recibidos(documento.sha256, len(contenido))
         ):
             raise _YaRegistrada(registro)
         # Cualquier otro SHA-256 repetido lo rechaza el repositorio al guardar (FacturaDuplicadaError).
+
+    def _hay_en_recibidos(self, sha256: str, tamano: int) -> bool:
+        """¿Hay en recibidos/ un archivo con este SHA-256? Solo se calcula el hash de los del mismo tamaño."""
+        try:
+            archivos = [p for p in self.configuracion.recibidos.iterdir() if tipo_por_nombre(p.name) is not None]
+        except FileNotFoundError:  # recibidos/ aún no existe: no se ha recibido nada
+            return False
+        # Si recibidos/ existe pero no se puede leer, el error sube y el archivo va a no_recibidos/ con su
+        # motivo: sin poder comprobarlo, no se da por "registrada y sin mover".
+        for archivo in archivos:
+            try:
+                mismo_tamano = archivo.is_file() and archivo.stat().st_size == tamano
+            except FileNotFoundError:  # lo movieron mientras se revisaba
+                continue
+            if mismo_tamano and hashlib.sha256(archivo.read_bytes()).hexdigest() == sha256:
+                return True
+        return False
 
     def _leer_cuando_termine_la_escritura(self, ruta: Path) -> bytes:
         """RF01 paso 3: no se lee hasta que el archivo deja de cambiar."""

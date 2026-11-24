@@ -100,7 +100,7 @@ Por cada archivo `.xml` o `.pdf` nuevo en el primer nivel de la carpeta:
 
 **Reintentos:** solo ante una causa temporal, es decir, un archivo que aún se copia, está vacío o está bloqueado, o una base de datos que no responde. Se hacen `RECEPCION_REINTENTOS` intentos más, con espera creciente (1, 2, 4… s); agotados, el archivo va a `no_recibidos/`. Un documento inválido, duplicado o demasiado grande va directo a `no_recibidos/`.
 
-**Factura ya registrada que no se alcanzó a mover:** si el SHA-256 ya existe y esa transacción entró por el canal `carpeta` con el mismo nombre de archivo (p. ej. el proceso se detuvo entre el registro y el movimiento), el archivo va a `recibidos/` con un registro de nivel **WARNING** y sin crear otra transacción. Cualquier otro SHA-256 repetido (otro nombre, o registrado por la API) es un duplicado y va a `no_recibidos/`.
+**SHA-256 ya registrado:** si en `recibidos/` ya hay un archivo con ese mismo SHA-256, la factura ya se recibió y esta es otra copia: es un duplicado y va a `no_recibidos/` con su `.motivo.json` y un **ERROR** (copiar dos veces el mismo archivo deja uno en cada carpeta). Si no lo hay y la transacción entró por el canal `carpeta` con el mismo nombre de archivo, es una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo entre el registro y el movimiento): va a `recibidos/` con un **WARNING** y sin crear otra transacción. Cualquier otro SHA-256 repetido (p. ej. registrado por la API) es un duplicado.
 
 **Interrupciones:** cada pocos segundos el vigilante comprueba que la carpeta exista y sea accesible. Si no lo es, deja un ERROR y reanuda cuando vuelve. Al arrancar o al reanudar procesa los archivos que llegaron mientras tanto, del más antiguo al más reciente.
 
