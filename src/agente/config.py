@@ -10,6 +10,16 @@ RAIZ = Path(__file__).resolve().parents[2]
 FUENTES_CATALOGO = ("bd", "csv")
 
 
+def _segundos(valor: str, nombre: str) -> float:
+    try:
+        segundos = float(valor)
+    except ValueError:
+        segundos = -1.0
+    if segundos < 0:
+        raise ValueError(f"{nombre} debe ser un número de segundos mayor o igual a 0, no {valor!r}.")
+    return segundos
+
+
 class Settings:
     def __init__(self) -> None:
         valores_env: dict[str, str] = {}
@@ -45,6 +55,29 @@ class Settings:
             raise ValueError("CORS_ORIGENES no acepta '*': liste los orígenes permitidos, separados por comas.")
         # /carpeta/procesar solo lee carpetas dentro de este directorio.
         self.directorio_entrada = Path(obtener("DIRECTORIO_ENTRADA", str(self.directorio_facturas)))
+        # Tamaño máximo de un documento de factura (carga por la API y recepción automática).
+        tamano = obtener("TAMANO_MAXIMO_DOCUMENTO_MB", "10").strip()
+        if not tamano.isdigit() or int(tamano) <= 0:
+            raise ValueError(f"TAMANO_MAXIMO_DOCUMENTO_MB debe ser un número entero positivo, no {tamano!r}.")
+        self.tamano_maximo_documento_mb = int(tamano)
+        # Recepción automática (RF01): adónde van los archivos procesados y los que fallan.
+        self.directorio_recibidos = Path(obtener("DIRECTORIO_RECIBIDOS", str(self.directorio_entrada / "recibidos")))
+        self.directorio_no_recibidos = Path(
+            obtener("DIRECTORIO_NO_RECIBIDOS", str(self.directorio_entrada / "no_recibidos"))
+        )
+        reintentos = obtener("RECEPCION_REINTENTOS", "3").strip()
+        if not reintentos.isdigit():
+            raise ValueError(f"RECEPCION_REINTENTOS debe ser un número entero mayor o igual a 0, no {reintentos!r}.")
+        self.recepcion_reintentos = int(reintentos)
+        self.recepcion_espera_inicial = _segundos(obtener("RECEPCION_ESPERA_INICIAL", "1"), "RECEPCION_ESPERA_INICIAL")
+        self.recepcion_espera_estabilidad = _segundos(
+            obtener("RECEPCION_ESPERA_ESTABILIDAD", "1"), "RECEPCION_ESPERA_ESTABILIDAD"
+        )
+
+    @property
+    def tamano_maximo_documento(self) -> int:
+        """En bytes."""
+        return self.tamano_maximo_documento_mb * 1024 * 1024
 
 
 @lru_cache

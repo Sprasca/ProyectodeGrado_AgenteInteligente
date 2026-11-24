@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from itertools import count
 
 from agente.domain.asiento import Partida
-from agente.domain.documento import DocumentoOriginal
-from agente.domain.enums import EstadoTransaccion, TipoEvento
+from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
 from agente.domain.resultado import ResultadoClasificacion
@@ -23,9 +23,11 @@ from agente.infrastructure.db.transacciones import (
     CuentaNoSembradaError,
     EventoTransaccion,
     TransaccionRegistrada,
+    canal_de_recepcion,
     datos_clasificacion,
     datos_recepcion,
     detalle_lineas,
+    documento_duplicado,
     estado_y_partidas,
     factura_duplicada,
 )
@@ -59,12 +61,19 @@ class RepositorioMemoria:
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         factura = resultado.factura
-        if any(t.numero_factura == factura.numero for t in self._por_id.values()):
-            raise factura_duplicada(factura.numero)
-        if factura.cufe is not None and any(t.cufe == factura.cufe for t in self._por_id.values()):
-            raise factura_duplicada(factura.numero, factura.cufe)
+        por_numero = next((t.id for t in self._por_id.values() if t.numero_factura == factura.numero), None)
+        if por_numero is not None:
+            raise factura_duplicada(factura.numero, id_existente=por_numero)
+        por_cufe = next((t.id for t in self._por_id.values() if factura.cufe and t.cufe == factura.cufe), None)
+        if por_cufe is not None:
+            raise factura_duplicada(factura.numero, factura.cufe, por_cufe)
+        if documento is not None:
+            existente = next((i for i, d in self._documentos.items() if d.sha256 == documento.sha256), None)
+            if existente is not None:
+                raise documento_duplicado(documento.sha256, existente)
         if resultado.asiento is not None:
             self._verificar_llave_foranea(resultado.asiento.partidas)
         registro = TransaccionRegistrada(
@@ -85,7 +94,7 @@ class RepositorioMemoria:
         self._por_id[registro.id] = registro
         if documento is not None:
             self._documentos[registro.id] = replace(documento, recibido_en=datetime.now(UTC))
-        recepcion = datos_recepcion(resultado, documento)
+        recepcion = datos_recepcion(resultado, documento, canal)
         self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion)
         self._registrar(registro.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado))
         return registro.id
@@ -172,3 +181,14 @@ class RepositorioMemoria:
     def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
         self._cargar(id_transaccion)
         return self._documentos.get(id_transaccion)
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        for id_transaccion, documento in self._documentos.items():
+            if documento.sha256 == sha256:
+                recibida = next(
+                    (e for e in self._eventos if e.transaccion_id == id_transaccion and e.tipo is TipoEvento.RECIBIDA),
+                    None,
+                )
+                canal = canal_de_recepcion(recibida.despues if recibida else None)
+                return DocumentoRegistrado(id_transaccion, documento.nombre_archivo, canal)
+        return None

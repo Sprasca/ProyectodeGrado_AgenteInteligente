@@ -6,3 +6,8 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 dist/
+docs/manual/
+
+# Carpeta de entrada local (RF01): las facturas que llegan no se versionan.
+entrada/*
+!entrada/.gitkeep

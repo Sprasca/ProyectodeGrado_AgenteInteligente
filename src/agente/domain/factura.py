@@ -15,6 +15,13 @@ PREFIJO_NUMERO_PROVISIONAL = "SIN-NUMERO-"
 _RE_NUMERO_PROVISIONAL = re.compile(rf"{PREFIJO_NUMERO_PROVISIONAL}[0-9a-f]{{8}}")
 MOTIVO_SIN_NUMERO = "Factura sin número. Se asignó un identificador provisional."
 
+# Origen que marca el lector de PDF en Factura.extras["origen"].
+ORIGEN_PDF = "pdf-local"
+MOTIVO_PDF = (
+    "Factura recibida en PDF: el documento no puede validarse contra el anexo técnico de la DIAN. "
+    "Requiere revisión del contador."
+)
+
 
 def numero_provisional() -> str:
     """Identificador para una factura cuyo documento no trae número: SIN-NUMERO-xxxxxxxx."""
@@ -66,6 +73,11 @@ class Factura:
     @property
     def es_venta(self) -> bool:
         return self.tipo_documento in TIPOS_VENTA
+
+    @property
+    def viene_de_pdf(self) -> bool:
+        """Un PDF no se puede validar contra el anexo técnico: nunca se aprueba automáticamente."""
+        return self.extras.get("origen") == ORIGEN_PDF
 
     @property
     def tiene_numero_provisional(self) -> bool:

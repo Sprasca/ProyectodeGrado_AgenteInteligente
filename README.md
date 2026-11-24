@@ -4,7 +4,7 @@ Proyecto de grado, Ingeniería de Sistemas, Universidad de Cartagena.
 
 El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la interpreta, propone el asiento contable bajo el PUC del Grupo 2 y deja en alerta lo que no clasifica con suficiente confianza.
 
-## Estado: Sprint 2 En Pruebas
+## Estado: Fase 3 (recepción automática, RF01) En Pruebas
 
 | Componente | Estado |
 |---|---|
@@ -17,6 +17,7 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | Persistencia de transacciones (guardar, listar, aprobar, corregir, rechazar) | Listo, con pruebas unitarias y de integración |
 | Usuarios con roles, autenticación OAuth2 + JWT y permisos por rol | Listo, con pruebas unitarias y de integración |
 | Trazabilidad de cada transacción (eventos con usuario y motivo) y documento original con SHA-256 | Listo, con pruebas unitarias y de integración |
+| Recepción automática desde `DIRECTORIO_ENTRADA` con watchdog (RF01) | Listo, con pruebas unitarias y de integración |
 | Caso de uso `clasificar_hibrido` (reglas + Groq para líneas sin regla) | Listo, con pruebas |
 | API HTTP (FastAPI) | Listo, con pruebas |
 | NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba |
@@ -35,7 +36,7 @@ cp .env.example .env
 uv run python -c "import secrets; print(secrets.token_urlsafe(48))"
 uv sync
 docker compose up -d db
-uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0007)
+uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0008)
 uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira reglas obsoletas
 ```
 
@@ -47,8 +48,12 @@ uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira
 | `JWT_MINUTOS` | Vigencia del token, en minutos (60 por defecto) |
 | `FUENTE_CATALOGO` | `bd` (por defecto) o `csv` (ver abajo) |
 | `CORS_ORIGENES` | Orígenes del navegador que pueden llamar la API, separados por comas. **Vacío por defecto**: ninguno. No acepta `*` |
-| `DIRECTORIO_FACTURAS` | Carpeta que procesa `/carpeta/procesar` si no se indica otra |
-| `DIRECTORIO_ENTRADA` | `/carpeta/procesar` solo acepta carpetas dentro de este directorio (por defecto, `DIRECTORIO_FACTURAS`). Una ruta fuera, incluso con `..`, responde **403** |
+| `DIRECTORIO_FACTURAS` | Carpeta que procesa `/carpeta/procesar` si no se indica otra. En `.env.example`, `./entrada`: una carpeta local fuera de git (solo se versiona `entrada/.gitkeep`). `facturas/` guarda solo los ejemplos de las pruebas |
+| `DIRECTORIO_ENTRADA` | Directorio que vigila la recepción automática (RF01). `/carpeta/procesar` solo acepta carpetas dentro de él (por defecto, `DIRECTORIO_FACTURAS`); una ruta fuera, incluso con `..`, responde **403** |
+| `DIRECTORIO_RECIBIDOS`, `DIRECTORIO_NO_RECIBIDOS` | Adónde mueve la recepción automática los archivos procesados y los que fallan (por defecto, `recibidos/` y `no_recibidos/` dentro de `DIRECTORIO_ENTRADA`) |
+| `RECEPCION_REINTENTOS`, `RECEPCION_ESPERA_INICIAL` | Reintentos ante una causa temporal (3) y espera antes del primero, en segundos (1); la espera se duplica en cada reintento |
+| `RECEPCION_ESPERA_ESTABILIDAD` | Segundos que un archivo debe dejar de cambiar para considerar terminada su copia (1) |
+| `TAMANO_MAXIMO_DOCUMENTO_MB` | Tamaño máximo de un documento de factura, en MB (10). En la API, uno mayor responde **413** |
 | `UMBRAL_CONFIANZA`, `GROQ_API_KEY`, `GROQ_MODELO` | Clasificación y sugerencias de Groq |
 
 ### De dónde sale el catálogo: `FUENTE_CATALOGO`
@@ -74,6 +79,34 @@ uv run python scripts/sembrar_puc.py --forzar       # sobrescribe las existentes
 - Cada regla insertada o sobrescrita queda en el historial con el usuario `scripts/sembrar_puc.py`.
 
 Si una partida usa una cuenta que no está en la base, guardar o corregir la transacción responde **409**: `La cuenta X no está en la base de datos. Ejecute scripts/sembrar_puc.py.`
+
+## Recepción automática de facturas (RF01)
+El sistema de facturación deja las facturas validadas por la DIAN en `DIRECTORIO_ENTRADA`; el agente las detecta y las procesa sin intervención humana.
+
+```bash
+uv run python scripts/recibir_facturas.py            # vigila la carpeta hasta Ctrl+C
+uv run python scripts/recibir_facturas.py --una-vez  # procesa lo que ya esté en la carpeta y termina
+uv run python scripts/recibir_facturas.py --sin-nlp  # clasifica solo con reglas (sin consultar a Groq)
+```
+
+Por cada archivo `.xml` o `.pdf` nuevo en el primer nivel de la carpeta:
+1. **Espera a que termine la copia**: el tamaño y la fecha del archivo deben dejar de cambiar (`RECEPCION_ESPERA_ESTABILIDAD`).
+2. **Valida** que sea un documento completo y legible:
+   - XML bien formado, con raíz `Invoice` (o `AttachedDocument` con el `Invoice` embebido) y con `cbc:ID`, `cbc:IssueDate` y al menos una `cac:InvoiceLine`;
+   - PDF que empiece con `%PDF-`, termine con `%%EOF` y se pueda abrir;
+   - en ambos casos, que no esté vacío ni supere `TAMANO_MAXIMO_DOCUMENTO_MB`.
+3. **Lo procesa con el mismo flujo de la carga por la API**: clasificación híbrida y persistencia, con el documento original, sus eventos `RECIBIDA` (canal `carpeta`, **sin usuario**) y `CLASIFICADA`, y el rechazo de duplicados por número, CUFE o SHA-256.
+4. **Lo mueve** a `recibidos/` o, si falla, a `no_recibidos/` junto con `<archivo>.motivo.json` (fecha, motivo, tipo de error e intentos; en un duplicado, además, `id_transaccion_existente`: la transacción original). Cada fallo deja además un registro de nivel **ERROR** en el log (la "alerta técnica" del manual). Nunca sobrescribe: si el nombre ya existe, agrega la fecha y la hora.
+
+**Reintentos:** solo ante una causa temporal, es decir, un archivo que aún se copia, está vacío o está bloqueado, o una base de datos que no responde. Se hacen `RECEPCION_REINTENTOS` intentos más, con espera creciente (1, 2, 4… s); agotados, el archivo va a `no_recibidos/`. Un documento inválido, duplicado o demasiado grande va directo a `no_recibidos/`.
+
+**SHA-256 ya registrado:** si en `recibidos/` ya hay un archivo con ese mismo SHA-256, la factura ya se recibió y esta es otra copia: es un duplicado y va a `no_recibidos/` con su `.motivo.json` y un **ERROR** (copiar dos veces el mismo archivo deja uno en cada carpeta). Si no lo hay y la transacción entró por el canal `carpeta` con el mismo nombre de archivo, es una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo entre el registro y el movimiento): va a `recibidos/` con un **WARNING** y sin crear otra transacción. Cualquier otro SHA-256 repetido (p. ej. registrado por la API) es un duplicado.
+
+**Interrupciones:** cada pocos segundos el vigilante comprueba que la carpeta exista y sea accesible. Si no lo es, deja un ERROR y reanuda cuando vuelve. Al arrancar o al reanudar procesa los archivos que llegaron mientras tanto, del más antiguo al más reciente.
+
+Una factura recibida en **PDF siempre queda `EN_ALERTA`**, en los dos canales (API y carpeta): un PDF no puede validarse contra el anexo técnico de la DIAN, así que nunca se aprueba automáticamente.
+
+**Decisión pendiente con el contador:** exigir el CUFE (`cbc:UUID`) en la validación. Hoy no se exige porque las facturas de prueba no lo traen.
 
 ## Usuarios y acceso
 
@@ -115,8 +148,8 @@ Documentación interactiva en http://127.0.0.1:8000/docs.
 |---|---|
 | `GET /salud` | Comprobación de vida (sin token) |
 | `POST /auth/token` | Inicio de sesión (OAuth2 con contraseña): devuelve el token JWT |
-| `POST /facturas/clasificar?usar_nlp=true&guardar=true` | Clasifica un `.xml` o `.pdf`. Con `guardar=true` lo registra con el **documento original** y devuelve su `id`. Número o **CUFE** repetido → **409**; cuenta no sembrada → **409**; base caída → **503**. Una factura sin número recibe `SIN-NUMERO-xxxxxxxx` y queda `EN_ALERTA` |
-| `POST /carpeta/procesar` | Clasifica los archivos de una carpeta dentro de `DIRECTORIO_ENTRADA` (no guarda) |
+| `POST /facturas/clasificar?usar_nlp=true&guardar=true` | Clasifica un `.xml` o `.pdf`. Con `guardar=true` lo registra con el **documento original** (canal `api`) y devuelve su `id`. Número, **CUFE** o archivo (**SHA-256**) repetido → **409**; más grande que `TAMANO_MAXIMO_DOCUMENTO_MB` → **413**; cuenta no sembrada → **409**; base caída → **503**. Una factura sin número recibe `SIN-NUMERO-xxxxxxxx` y queda `EN_ALERTA` |
+| `POST /carpeta/procesar` | Clasifica los archivos de una carpeta dentro de `DIRECTORIO_ENTRADA` (no guarda). Con `recursivo=true` omite `recibidos/` y `no_recibidos/` |
 | `GET /transacciones?estado=EN_ALERTA` | Lista transacciones, con filtro opcional por estado |
 | `GET /transacciones/{id}` | Transacción con sus partidas, CUFE, detalle por línea y, si fue corregida, `asiento_propuesto` y `corregido_en` |
 | `GET /transacciones/{id}/eventos` | Trazabilidad: quién hizo qué, cuándo y por qué |
@@ -133,7 +166,7 @@ Cada acción sobre una transacción deja un evento en `evento_transaccion`, en l
 
 | Evento | Cuándo | Usuario |
 |---|---|---|
-| `RECIBIDA` | Al guardar la factura (con nombre, tamaño y SHA-256 del archivo) | Quien la cargó |
+| `RECIBIDA` | Al guardar la factura (canal `api` o `carpeta`; nombre, tamaño y SHA-256 del archivo) | Quien la cargó; ninguno en la recepción automática |
 | `CLASIFICADA` | Al guardar (estado, confianza, reglas y partidas propuestas) | Ninguno: automático |
 | `APROBADA`, `CORREGIDA`, `RECHAZADA` | Acciones del contador, con el motivo y el antes/después | El contador |
 

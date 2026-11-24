@@ -29,7 +29,7 @@ from fabricas import (
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal
-from agente.domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from agente.domain.errors import (
     AsientoInvalidoError,
     CuentaNoExisteError,
@@ -93,9 +93,11 @@ class ContratoRepositorio:
 
     def test_guardar_duplicado_lanza_error_y_no_guarda(self, repo, nuevo_numero, catalogo):
         numero = nuevo_numero()
-        repo.guardar(resultado_aprobado(catalogo, numero))
-        with pytest.raises(FacturaDuplicadaError):
+        original = repo.guardar(resultado_aprobado(catalogo, numero))
+        with pytest.raises(FacturaDuplicadaError) as error:
             repo.guardar(resultado_alerta_sin_asiento(catalogo, numero))
+        assert error.value.id_existente == original  # la transacción original, para el contador
+        assert str(error.value) == f"La factura {numero} ya fue registrada en la transacción {original}."
         mismas = [t for t in repo.listar() if t.numero_factura == numero]
         assert len(mismas) == 1
         assert mismas[0].estado is EstadoTransaccion.APROBADA_AUTOMATICA
@@ -458,11 +460,75 @@ class ContratoRepositorio:
         assert repo.obtener(id_).cufe == cufe
         assert repo.eventos(id_)[0].despues["cufe"] == cufe
         otro_numero = nuevo_numero()
-        with pytest.raises(FacturaDuplicadaError, match=cufe):
+        with pytest.raises(FacturaDuplicadaError, match=cufe) as error:
             repo.guardar(resultado_con_cufe(catalogo, otro_numero, cufe))
+        assert error.value.id_existente == id_ and str(id_) in str(error.value)
         assert all(t.numero_factura != otro_numero for t in repo.listar())
 
     def test_varias_facturas_sin_cufe_no_chocan(self, repo, nuevo_numero, catalogo):
         primera = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         segunda = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         assert repo.obtener(primera).cufe is None and repo.obtener(segunda).cufe is None
+
+    # --- canal de llegada ----------------------------------------------------------------------
+
+    def test_recepcion_automatica_registra_canal_carpeta_y_usuario_nulo(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()), canal=CanalRecepcion.CARPETA)
+        recibida = repo.eventos(id_)[0]
+        assert (recibida.tipo, recibida.usuario_id) == (TipoEvento.RECIBIDA, None)
+        assert recibida.despues["canal"] == "carpeta"
+
+    def test_carga_por_api_registra_canal_api(self, repo, nuevo_numero, catalogo, id_usuario):
+        resultado = resultado_aprobado(catalogo, nuevo_numero())
+        id_ = repo.guardar(resultado, usuario_id=id_usuario, canal=CanalRecepcion.API)
+        recibida = repo.eventos(id_)[0]
+        assert (recibida.usuario_id, recibida.despues["canal"]) == (id_usuario, "api")
+
+    def test_sin_canal_queda_nulo(self, repo, nuevo_numero, catalogo):
+        id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
+        assert repo.eventos(id_)[0].despues["canal"] is None
+
+    # --- documento duplicado por SHA-256 ------------------------------------------------------------
+
+    def test_mismo_documento_con_otro_numero_es_duplicado(self, repo, nuevo_numero, catalogo):
+        contenido = b"<Invoice>mismo archivo, numero provisional distinto</Invoice>"
+        primero = DocumentoOriginal.recibido("a.xml", TipoDocumento.XML, contenido)
+        id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()), documento=primero)
+        otro_numero = nuevo_numero()
+        repetido = DocumentoOriginal.recibido("otro-nombre.xml", TipoDocumento.XML, contenido)
+        with pytest.raises(FacturaDuplicadaError, match=f"SHA-256 {primero.sha256}") as error:
+            repo.guardar(resultado_alerta_sin_asiento(catalogo, otro_numero), documento=repetido)
+        assert str(id_) in str(error.value)
+        assert error.value.id_existente == id_
+        assert all(t.numero_factura != otro_numero for t in repo.listar())
+
+    def test_documento_registrado_por_sha256_con_nombre_y_canal(self, repo, nuevo_numero, catalogo):
+        contenido = f"<Invoice>{uuid.uuid4()}</Invoice>".encode()
+        documento = DocumentoOriginal.recibido("entrada/llego.xml", TipoDocumento.XML, contenido)
+        id_ = repo.guardar(
+            resultado_aprobado(catalogo, nuevo_numero()), documento=documento, canal=CanalRecepcion.CARPETA
+        )
+        registrado = repo.documento_registrado(documento.sha256)
+        assert (registrado.transaccion_id, registrado.nombre_archivo, registrado.canal) == (
+            id_,
+            "llego.xml",
+            CanalRecepcion.CARPETA,
+        )
+
+    def test_documento_registrado_por_api_y_sin_canal(self, repo, nuevo_numero, catalogo, id_usuario):
+        por_api = DocumentoOriginal.recibido("api.xml", TipoDocumento.XML, f"<a>{uuid.uuid4()}</a>".encode())
+        sin_canal = DocumentoOriginal.recibido("viejo.xml", TipoDocumento.XML, f"<b>{uuid.uuid4()}</b>".encode())
+        resultado = resultado_aprobado(catalogo, nuevo_numero())
+        repo.guardar(resultado, usuario_id=id_usuario, documento=por_api, canal=CanalRecepcion.API)
+        repo.guardar(resultado_aprobado(catalogo, nuevo_numero()), documento=sin_canal)
+        assert repo.documento_registrado(por_api.sha256).canal is CanalRecepcion.API
+        assert repo.documento_registrado(sin_canal.sha256).canal is None
+
+    def test_documento_no_registrado(self, repo):
+        assert repo.documento_registrado(hashlib.sha256(uuid.uuid4().bytes).hexdigest()) is None
+
+    def test_documentos_distintos_no_chocan(self, repo, nuevo_numero, catalogo):
+        for contenido in (b"<Invoice>uno</Invoice>", b"<Invoice>dos</Invoice>"):
+            documento = DocumentoOriginal.recibido("f.xml", TipoDocumento.XML, contenido)
+            repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()), documento=documento)
+

@@ -3,7 +3,6 @@
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
-from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
 
@@ -16,14 +15,14 @@ from pydantic import BaseModel, ConfigDict
 
 from ..application.clasificar_con_nlp import (
     catalogo_por_defecto,
-    clasificar_hibrido,
     invalidar_catalogo,
     procesar_carpeta,
 )
+from ..application.registrar_documento import clasificar_documento, guardar_documento
 from ..config import get_settings
 from ..domain.asiento import Partida
 from ..domain.documento import DocumentoOriginal
-from ..domain.enums import EstadoTransaccion, Naturaleza, Rol, TipoDocumento
+from ..domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, Rol, TipoDocumento
 from ..domain.errors import (
     AsientoInvalidoError,
     ConflictoReglaError,
@@ -48,9 +47,8 @@ from ..infrastructure.db.transacciones import (
     RepositorioSQL,
     RepositorioTransacciones,
 )
+from ..infrastructure.dian.documentos import tipo_por_nombre
 from ..infrastructure.dian.lector_carpeta import carpeta_permitida
-from ..infrastructure.dian.lector_pdf import factura_desde_pdf
-from ..infrastructure.dian.parser import parsear_xml
 from .autenticacion import RepoUsuarios, crear_token, validar_secreto
 from .permisos import UsuarioAutorizado, autorizar
 
@@ -239,32 +237,45 @@ def clasificar_archivo(
     usar_nlp: bool = True,
     guardar: bool = True,
 ):
-    contenido = archivo.file.read()
-    sufijo = Path(archivo.filename or "").suffix.lower()
-    if sufijo not in (".xml", ".pdf"):
+    tipo = tipo_por_nombre(archivo.filename)
+    if tipo is None:
         raise HTTPException(415, "Solo se aceptan archivos .xml o .pdf")
+    limite = get_settings().tamano_maximo_documento
+    contenido = archivo.file.read(limite + 1)  # nunca se lee más de lo permitido
+    if len(contenido) > limite:
+        raise HTTPException(
+            413, f"El archivo supera el tamaño máximo de {get_settings().tamano_maximo_documento_mb} MB."
+        )
     try:
-        factura = parsear_xml(contenido) if sufijo == ".xml" else factura_desde_pdf(contenido)
-        resultado = clasificar_hibrido(factura, catalogo, usar_nlp=usar_nlp)
+        resultado = clasificar_documento(contenido, tipo, catalogo, usar_nlp=usar_nlp)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
     respuesta = jsonable_encoder(resultado)
     if guardar:
-        tipo = TipoDocumento.XML if sufijo == ".xml" else TipoDocumento.PDF
         documento = DocumentoOriginal.recibido(archivo.filename, tipo, contenido)
-        respuesta["id"] = str(repositorio.guardar(resultado, usuario_id=usuario.id, documento=documento))
+        id_transaccion = guardar_documento(
+            resultado, documento, repositorio, canal=CanalRecepcion.API, usuario_id=usuario.id
+        )
+        respuesta["id"] = str(id_transaccion)
     return respuesta
 
 
 @app.post("/carpeta/procesar", dependencies=[Autorizado])
 def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
-    """Solo carpetas dentro de DIRECTORIO_ENTRADA; fuera (incluso con "..") → 403."""
+    """
+    Solo carpetas dentro de DIRECTORIO_ENTRADA; fuera (incluso con "..") → 403. Con recursivo=true
+    se omiten recibidos/ y no_recibidos/ de la recepción automática.
+    """
     settings = get_settings()
     entrada = settings.directorio_entrada
     carpeta = carpeta_permitida(solicitud.ruta, entrada, settings.directorio_facturas)
     try:
-        resultados = procesar_carpeta(str(carpeta), solicitud.recursivo, solicitud.usar_nlp, catalogo, raiz=entrada)
+        # Con recursivo=true no se reprocesa lo que la recepción automática ya movió.
+        excluir = (settings.directorio_recibidos, settings.directorio_no_recibidos)
+        resultados = procesar_carpeta(
+            str(carpeta), solicitud.recursivo, solicitud.usar_nlp, catalogo, raiz=entrada, excluir=excluir
+        )
         return jsonable_encoder(resultados)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc

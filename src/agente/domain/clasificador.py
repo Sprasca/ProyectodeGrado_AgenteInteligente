@@ -3,7 +3,7 @@ from decimal import Decimal
 from .asiento import AsientoContable, Partida
 from .enums import CondicionPago, EstadoLinea, EstadoTransaccion, Naturaleza
 from .errors import AsientoInvalidoError, CuentaNoExisteError
-from .factura import CODIGO_IVA, MEDIO_PAGO_EFECTIVO, MOTIVO_SIN_NUMERO, Factura, LineaFactura
+from .factura import CODIGO_IVA, MEDIO_PAGO_EFECTIVO, MOTIVO_PDF, MOTIVO_SIN_NUMERO, Factura, LineaFactura
 from .puc import CatalogoPUC, ReglaIngreso, palabras
 from .resultado import ClasificacionLinea, ResultadoClasificacion
 
@@ -87,6 +87,9 @@ def clasificar(
     # Un número provisional impide la aprobación automática: el motivo deja la factura EN_ALERTA.
     if factura.tiene_numero_provisional:
         motivos.append(MOTIVO_SIN_NUMERO)
+    # Un PDF no se valida contra el anexo técnico de la DIAN: siempre EN_ALERTA, en cualquier canal.
+    if factura.viene_de_pdf:
+        motivos.append(MOTIVO_PDF)
 
     if not factura.es_venta:
         motivos.append(f"Tipo de documento {factura.tipo_documento!r} no es de venta (RN01).")

@@ -1,13 +1,14 @@
 """Lee facturas .xml y .pdf desde una carpeta origen configurable."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ...config import get_settings
+from ...domain.enums import TipoDocumento
 from ...domain.errors import RutaNoPermitidaError
 from ...domain.factura import Factura
-from .lector_pdf import factura_desde_pdf
-from .parser import parsear_xml
+from .documentos import leer_documento, tipo_por_nombre
 
 EXTENSIONES = {".xml", ".pdf"}
 
@@ -20,10 +21,7 @@ class ArchivoLeido:
 
 
 def leer_factura(ruta: Path) -> Factura:
-    contenido = ruta.read_bytes()
-    if ruta.suffix.lower() == ".pdf":
-        return factura_desde_pdf(contenido)
-    return parsear_xml(contenido)
+    return leer_documento(ruta.read_bytes(), tipo_por_nombre(ruta.name) or TipoDocumento.XML)
 
 
 def carpeta_permitida(ruta: str | None, entrada: Path, predeterminada: Path) -> Path:
@@ -40,17 +38,26 @@ def carpeta_permitida(ruta: str | None, entrada: Path, predeterminada: Path) -> 
 
 
 def leer_carpeta(
-    carpeta: str | Path | None = None, recursivo: bool = False, raiz: Path | None = None
+    carpeta: str | Path | None = None,
+    recursivo: bool = False,
+    raiz: Path | None = None,
+    excluir: Iterable[Path] = (),
 ) -> list[ArchivoLeido]:
     """
     Lee todos los .xml/.pdf de la carpeta. Un archivo defectuoso no detiene a los demás.
     Con raiz, omite los archivos que (por un enlace simbólico) apunten fuera de ella.
+    Al recorrer subcarpetas (recursivo), omite las de `excluir` (p. ej. recibidos/ y no_recibidos/ de
+    la recepción automática), salvo que sean la carpeta pedida.
     """
     base = Path(carpeta) if carpeta else get_settings().directorio_facturas
     if not base.is_dir():
         raise FileNotFoundError(f"La carpeta no existe: {base}")
     patron = base.rglob("*") if recursivo else base.glob("*")
     archivos = sorted(p for p in patron if p.is_file() and p.suffix.lower() in EXTENSIONES)
+    if recursivo:
+        origen = base.resolve()
+        omitidas = [e.resolve() for e in excluir if e.resolve() != origen]
+        archivos = [p for p in archivos if not any(p.resolve().is_relative_to(o) for o in omitidas)]
     if raiz is not None:
         limite = raiz.resolve()
         archivos = [p for p in archivos if p.resolve().is_relative_to(limite)]

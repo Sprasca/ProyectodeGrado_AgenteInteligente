@@ -15,8 +15,8 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
-from ...domain.documento import DocumentoOriginal
-from ...domain.enums import EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
+from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
 from ...domain.resultado import ResultadoClasificacion
@@ -93,15 +93,21 @@ class RepositorioTransacciones(Protocol):
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         """
-        Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id) y
-        CLASIFICADA (automático). FacturaDuplicadaError si el número o el CUFE ya existen.
+        Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id, que es
+        None en la recepción automática, y con el canal de llegada) y CLASIFICADA (automático).
+        FacturaDuplicadaError si el número, el CUFE o el SHA-256 del documento ya existen.
         """
         ...
 
     def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
         """El archivo original, o None si no se guardó. TransaccionNoEncontradaError si no existe."""
+        ...
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        """La transacción que ya tiene un documento con ese SHA-256 (con su nombre y canal), o None."""
         ...
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None: ...
@@ -176,10 +182,15 @@ def partidas_desde_json(datos: Sequence[dict[str, str]]) -> tuple[Partida, ...]:
     )
 
 
-def datos_recepcion(resultado: ResultadoClasificacion, documento: DocumentoOriginal | None = None) -> dict[str, Any]:
-    """Lo que se recibió: identificación de la factura y huella del archivo original."""
+def datos_recepcion(
+    resultado: ResultadoClasificacion,
+    documento: DocumentoOriginal | None = None,
+    canal: CanalRecepcion | None = None,
+) -> dict[str, Any]:
+    """Lo que se recibió, por qué canal, y la huella del archivo original."""
     factura = resultado.factura
     datos: dict[str, Any] = {
+        "canal": CanalRecepcion(canal).value if canal is not None else None,
         "numero_factura": factura.numero,
         "cufe": factura.cufe,
         "fecha": factura.fecha.isoformat(),
@@ -197,10 +208,29 @@ def datos_recepcion(resultado: ResultadoClasificacion, documento: DocumentoOrigi
     return datos
 
 
-def factura_duplicada(numero: str, cufe: str | None = None) -> FacturaDuplicadaError:
+def canal_de_recepcion(despues: dict[str, Any] | None) -> CanalRecepcion | None:
+    """El canal guardado en el evento RECIBIDA (None en registros anteriores al canal)."""
+    valor = (despues or {}).get("canal")
+    return CanalRecepcion(valor) if valor in {c.value for c in CanalRecepcion} else None
+
+
+def _en_transaccion(id_existente: uuid.UUID | None) -> str:
+    return f" en la transacción {id_existente}" if id_existente is not None else ""
+
+
+def documento_duplicado(sha256: str, id_existente: uuid.UUID | None = None) -> FacturaDuplicadaError:
+    mensaje = f"El documento con SHA-256 {sha256} ya fue registrado{_en_transaccion(id_existente)}."
+    return FacturaDuplicadaError(mensaje, id_existente)
+
+
+def factura_duplicada(
+    numero: str, cufe: str | None = None, id_existente: uuid.UUID | None = None
+) -> FacturaDuplicadaError:
     if cufe is not None:
-        return FacturaDuplicadaError(f"La factura con CUFE {cufe} ya fue registrada.")
-    return FacturaDuplicadaError(f"La factura {numero} ya fue registrada.")
+        mensaje = f"La factura con CUFE {cufe} ya fue registrada{_en_transaccion(id_existente)}."
+    else:
+        mensaje = f"La factura {numero} ya fue registrada{_en_transaccion(id_existente)}."
+    return FacturaDuplicadaError(mensaje, id_existente)
 
 
 def datos_clasificacion(resultado: ResultadoClasificacion) -> dict[str, Any]:
@@ -312,20 +342,26 @@ class RepositorioSQL:
         *,
         usuario_id: int | None = None,
         documento: DocumentoOriginal | None = None,
+        canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         factura = resultado.factura
-        duplicada = factura_duplicada(factura.numero)
         try:
             with self._transaccion() as sesion:
                 existe = sesion.scalar(
                     select(TransaccionModel.id).where(TransaccionModel.numero_factura == factura.numero)
                 )
                 if existe is not None:
-                    raise duplicada
-                if factura.cufe is not None and sesion.scalar(
-                    select(TransaccionModel.id).where(TransaccionModel.cufe == factura.cufe)
-                ):
-                    raise factura_duplicada(factura.numero, factura.cufe)
+                    raise factura_duplicada(factura.numero, id_existente=existe)
+                if factura.cufe is not None:
+                    con_cufe = sesion.scalar(select(TransaccionModel.id).where(TransaccionModel.cufe == factura.cufe))
+                    if con_cufe is not None:
+                        raise factura_duplicada(factura.numero, factura.cufe, con_cufe)
+                if documento is not None:
+                    existente = sesion.scalar(
+                        select(DocumentoModel.transaccion_id).where(DocumentoModel.sha256 == documento.sha256)
+                    )
+                    if existente is not None:
+                        raise documento_duplicado(documento.sha256, existente)
                 t = TransaccionModel(
                     id=uuid.uuid4(),
                     numero_factura=factura.numero,
@@ -355,7 +391,7 @@ class RepositorioSQL:
                             recibido_en=datetime.now(UTC),
                         )
                     )
-                recepcion = datos_recepcion(resultado, documento)
+                recepcion = datos_recepcion(resultado, documento, canal)
                 sesion.add(_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
                 sesion.add(_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()
@@ -365,11 +401,25 @@ class RepositorioSQL:
             if _sqlstate(exc) == _VIOLACION_UNICA:
                 restriccion = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
                 if restriccion == "uq_transaccion_cufe":
-                    raise factura_duplicada(factura.numero, factura.cufe) from exc
-                raise duplicada from exc
+                    original = self._id_existente(TransaccionModel.id, TransaccionModel.cufe == factura.cufe)
+                    raise factura_duplicada(factura.numero, factura.cufe, original) from exc
+                if restriccion == "uq_documento_sha256" and documento is not None:
+                    condicion = DocumentoModel.sha256 == documento.sha256
+                    original = self._id_existente(DocumentoModel.transaccion_id, condicion)
+                    raise documento_duplicado(documento.sha256, original) from exc
+                original = self._id_existente(TransaccionModel.id, TransaccionModel.numero_factura == factura.numero)
+                raise factura_duplicada(factura.numero, id_existente=original) from exc
             partidas = resultado.asiento.partidas if resultado.asiento is not None else ()
             self._traducir_llave_foranea(exc, partidas)
             raise
+
+    def _id_existente(self, columna, condicion) -> uuid.UUID | None:
+        """La transacción que ganó la carrera; None si no se puede consultar (el duplicado se informa igual)."""
+        try:
+            with self._transaccion() as sesion:
+                return sesion.scalar(select(columna).where(condicion))
+        except RepositorioNoDisponibleError:
+            return None
 
     def _traducir_llave_foranea(self, exc: IntegrityError, partidas: Sequence[Partida]) -> None:
         """Si la base rechazó una partida por la llave foránea a cuenta_puc, lanza CuentaNoSembradaError."""
@@ -484,3 +534,20 @@ class RepositorioSQL:
             if fila is None:
                 return None
             return DocumentoOriginal(fila.nombre_archivo, TipoDocumento(fila.tipo), fila.contenido, fila.recibido_en)
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        with self._transaccion() as sesion:
+            fila = sesion.execute(
+                select(DocumentoModel.transaccion_id, DocumentoModel.nombre_archivo, EventoTransaccionModel.despues)
+                .outerjoin(
+                    EventoTransaccionModel,
+                    (EventoTransaccionModel.transaccion_id == DocumentoModel.transaccion_id)
+                    & (EventoTransaccionModel.tipo == TipoEvento.RECIBIDA.value),
+                )
+                .where(DocumentoModel.sha256 == sha256)
+                .order_by(EventoTransaccionModel.id)
+                .limit(1)
+            ).first()
+            if fila is None:
+                return None
+            return DocumentoRegistrado(fila.transaccion_id, fila.nombre_archivo, canal_de_recepcion(fila.despues))

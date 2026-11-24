@@ -155,7 +155,10 @@ class DocumentoModel(Base):
     """El archivo original (XML o PDF) tal como se recibió, con su huella SHA-256."""
 
     __tablename__ = "documento"
-    __table_args__ = (CheckConstraint("tipo IN ('XML', 'PDF')", name="ck_documento_tipo"),)
+    __table_args__ = (
+        CheckConstraint("tipo IN ('XML', 'PDF')", name="ck_documento_tipo"),
+        UniqueConstraint("sha256", name="uq_documento_sha256"),  # el mismo archivo no se registra dos veces
+    )
 
     transaccion_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("transaccion.id", name="fk_documento_transaccion"), primary_key=True
