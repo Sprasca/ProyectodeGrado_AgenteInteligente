@@ -109,10 +109,14 @@ def test_clasificar_factura_sin_numero_queda_en_alerta_con_numero_provisional(cl
     assert guardada["numero_factura"] == datos["factura"]["numero"]
     assert guardada["estado"] == "EN_ALERTA"
 
-    # Cada carga recibe un identificador nuevo: no se rechaza como duplicada.
-    segunda = _subir(cliente, contenido=sin_numero, **SIN_NLP)
+    # Otra factura sin número (otro archivo) recibe un identificador nuevo: no se rechaza como duplicada.
+    otra_sin_numero = sin_numero.replace(b"Venta de mercanc", b"Venta de otra mercanc")
+    segunda = _subir(cliente, contenido=otra_sin_numero, **SIN_NLP)
     assert segunda.status_code == 200
     assert segunda.json()["factura"]["numero"] != datos["factura"]["numero"]
+
+    # El MISMO archivo repetido sí es duplicado (mismo SHA-256), aunque reciba otro número provisional.
+    assert _subir(cliente, contenido=sin_numero, **SIN_NLP).status_code == 409
 
 
 def test_clasificar_extension_no_soportada_415(cliente):

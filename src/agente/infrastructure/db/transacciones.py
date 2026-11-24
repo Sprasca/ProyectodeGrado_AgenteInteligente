@@ -98,7 +98,7 @@ class RepositorioTransacciones(Protocol):
         """
         Registra el resultado, el documento original y los eventos RECIBIDA (de usuario_id, que es
         None en la recepción automática, y con el canal de llegada) y CLASIFICADA (automático).
-        FacturaDuplicadaError si el número o el CUFE ya existen.
+        FacturaDuplicadaError si el número, el CUFE o el SHA-256 del documento ya existen.
         """
         ...
 
@@ -202,6 +202,11 @@ def datos_recepcion(
             "sha256": documento.sha256,
         }
     return datos
+
+
+def documento_duplicado(sha256: str, id_existente: uuid.UUID | None = None) -> FacturaDuplicadaError:
+    donde = f" en la transacción {id_existente}" if id_existente is not None else ""
+    return FacturaDuplicadaError(f"El documento con SHA-256 {sha256} ya fue registrado{donde}.")
 
 
 def factura_duplicada(numero: str, cufe: str | None = None) -> FacturaDuplicadaError:
@@ -334,6 +339,12 @@ class RepositorioSQL:
                     select(TransaccionModel.id).where(TransaccionModel.cufe == factura.cufe)
                 ):
                     raise factura_duplicada(factura.numero, factura.cufe)
+                if documento is not None:
+                    existente = sesion.scalar(
+                        select(DocumentoModel.transaccion_id).where(DocumentoModel.sha256 == documento.sha256)
+                    )
+                    if existente is not None:
+                        raise documento_duplicado(documento.sha256, existente)
                 t = TransaccionModel(
                     id=uuid.uuid4(),
                     numero_factura=factura.numero,
@@ -374,6 +385,8 @@ class RepositorioSQL:
                 restriccion = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
                 if restriccion == "uq_transaccion_cufe":
                     raise factura_duplicada(factura.numero, factura.cufe) from exc
+                if restriccion == "uq_documento_sha256" and documento is not None:
+                    raise documento_duplicado(documento.sha256) from exc
                 raise duplicada from exc
             partidas = resultado.asiento.partidas if resultado.asiento is not None else ()
             self._traducir_llave_foranea(exc, partidas)

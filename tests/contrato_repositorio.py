@@ -485,3 +485,21 @@ class ContratoRepositorio:
         id_ = repo.guardar(resultado_aprobado(catalogo, nuevo_numero()))
         assert repo.eventos(id_)[0].despues["canal"] is None
 
+    # --- documento duplicado por SHA-256 ------------------------------------------------------------
+
+    def test_mismo_documento_con_otro_numero_es_duplicado(self, repo, nuevo_numero, catalogo):
+        contenido = b"<Invoice>mismo archivo, numero provisional distinto</Invoice>"
+        primero = DocumentoOriginal.recibido("a.xml", TipoDocumento.XML, contenido)
+        id_ = repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()), documento=primero)
+        otro_numero = nuevo_numero()
+        repetido = DocumentoOriginal.recibido("otro-nombre.xml", TipoDocumento.XML, contenido)
+        with pytest.raises(FacturaDuplicadaError, match=f"SHA-256 {primero.sha256}") as error:
+            repo.guardar(resultado_alerta_sin_asiento(catalogo, otro_numero), documento=repetido)
+        assert str(id_) in str(error.value)
+        assert all(t.numero_factura != otro_numero for t in repo.listar())
+
+    def test_documentos_distintos_no_chocan(self, repo, nuevo_numero, catalogo):
+        for contenido in (b"<Invoice>uno</Invoice>", b"<Invoice>dos</Invoice>"):
+            documento = DocumentoOriginal.recibido("f.xml", TipoDocumento.XML, contenido)
+            repo.guardar(resultado_alerta_sin_asiento(catalogo, nuevo_numero()), documento=documento)
+

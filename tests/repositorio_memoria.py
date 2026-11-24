@@ -26,6 +26,7 @@ from agente.infrastructure.db.transacciones import (
     datos_clasificacion,
     datos_recepcion,
     detalle_lineas,
+    documento_duplicado,
     estado_y_partidas,
     factura_duplicada,
 )
@@ -66,6 +67,10 @@ class RepositorioMemoria:
             raise factura_duplicada(factura.numero)
         if factura.cufe is not None and any(t.cufe == factura.cufe for t in self._por_id.values()):
             raise factura_duplicada(factura.numero, factura.cufe)
+        if documento is not None:
+            existente = next((i for i, d in self._documentos.items() if d.sha256 == documento.sha256), None)
+            if existente is not None:
+                raise documento_duplicado(documento.sha256, existente)
         if resultado.asiento is not None:
             self._verificar_llave_foranea(resultado.asiento.partidas)
         registro = TransaccionRegistrada(
