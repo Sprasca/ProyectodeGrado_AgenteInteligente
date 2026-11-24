@@ -93,9 +93,11 @@ class ContratoRepositorio:
 
     def test_guardar_duplicado_lanza_error_y_no_guarda(self, repo, nuevo_numero, catalogo):
         numero = nuevo_numero()
-        repo.guardar(resultado_aprobado(catalogo, numero))
-        with pytest.raises(FacturaDuplicadaError):
+        original = repo.guardar(resultado_aprobado(catalogo, numero))
+        with pytest.raises(FacturaDuplicadaError) as error:
             repo.guardar(resultado_alerta_sin_asiento(catalogo, numero))
+        assert error.value.id_existente == original  # la transacción original, para el contador
+        assert str(error.value) == f"La factura {numero} ya fue registrada en la transacción {original}."
         mismas = [t for t in repo.listar() if t.numero_factura == numero]
         assert len(mismas) == 1
         assert mismas[0].estado is EstadoTransaccion.APROBADA_AUTOMATICA
@@ -458,8 +460,9 @@ class ContratoRepositorio:
         assert repo.obtener(id_).cufe == cufe
         assert repo.eventos(id_)[0].despues["cufe"] == cufe
         otro_numero = nuevo_numero()
-        with pytest.raises(FacturaDuplicadaError, match=cufe):
+        with pytest.raises(FacturaDuplicadaError, match=cufe) as error:
             repo.guardar(resultado_con_cufe(catalogo, otro_numero, cufe))
+        assert error.value.id_existente == id_ and str(id_) in str(error.value)
         assert all(t.numero_factura != otro_numero for t in repo.listar())
 
     def test_varias_facturas_sin_cufe_no_chocan(self, repo, nuevo_numero, catalogo):
@@ -496,6 +499,7 @@ class ContratoRepositorio:
         with pytest.raises(FacturaDuplicadaError, match=f"SHA-256 {primero.sha256}") as error:
             repo.guardar(resultado_alerta_sin_asiento(catalogo, otro_numero), documento=repetido)
         assert str(id_) in str(error.value)
+        assert error.value.id_existente == id_
         assert all(t.numero_factura != otro_numero for t in repo.listar())
 
     def test_documento_registrado_por_sha256_con_nombre_y_canal(self, repo, nuevo_numero, catalogo):

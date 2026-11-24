@@ -15,7 +15,14 @@ class CatalogoInvalidoError(ErrorDeDominio):
 
 
 class FacturaDuplicadaError(ErrorDeDominio):
-    """Ya existe una transacción registrada con ese número de factura."""
+    """
+    Ya existe una transacción con ese número de factura, CUFE o documento (SHA-256).
+    id_existente es la transacción original, para que el contador la ubique (None si no se pudo saber).
+    """
+
+    def __init__(self, mensaje: str, id_existente: object | None = None) -> None:
+        super().__init__(mensaje)
+        self.id_existente = id_existente
 
 
 class TransicionInvalidaError(ErrorDeDominio):

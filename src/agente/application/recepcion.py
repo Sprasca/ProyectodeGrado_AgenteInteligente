@@ -33,6 +33,7 @@ from pathlib import Path
 from ..config import Settings
 from ..domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ..domain.enums import CanalRecepcion, TipoDocumento
+from ..domain.errors import FacturaDuplicadaError
 from ..infrastructure.db.transacciones import RepositorioNoDisponibleError
 from ..infrastructure.dian.documentos import tipo_por_nombre
 from ..infrastructure.dian.validacion import validar_documento
@@ -269,6 +270,10 @@ class ReceptorFacturas:
             "tipo_error": type(exc).__name__,
             "intentos": intentos,
         }
+        if isinstance(exc, FacturaDuplicadaError):
+            # La transacción original, para que el contador la ubique (null si no se pudo saber).
+            existente = exc.id_existente
+            registro["id_transaccion_existente"] = str(existente) if existente is not None else None
         if destino is not None:
             destino.with_name(destino.name + SUFIJO_MOTIVO).write_text(
                 json.dumps(registro, ensure_ascii=False, indent=2), encoding="utf-8"

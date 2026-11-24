@@ -64,10 +64,12 @@ class RepositorioMemoria:
         canal: CanalRecepcion | None = None,
     ) -> uuid.UUID:
         factura = resultado.factura
-        if any(t.numero_factura == factura.numero for t in self._por_id.values()):
-            raise factura_duplicada(factura.numero)
-        if factura.cufe is not None and any(t.cufe == factura.cufe for t in self._por_id.values()):
-            raise factura_duplicada(factura.numero, factura.cufe)
+        por_numero = next((t.id for t in self._por_id.values() if t.numero_factura == factura.numero), None)
+        if por_numero is not None:
+            raise factura_duplicada(factura.numero, id_existente=por_numero)
+        por_cufe = next((t.id for t in self._por_id.values() if factura.cufe and t.cufe == factura.cufe), None)
+        if por_cufe is not None:
+            raise factura_duplicada(factura.numero, factura.cufe, por_cufe)
         if documento is not None:
             existente = next((i for i, d in self._documentos.items() if d.sha256 == documento.sha256), None)
             if existente is not None:

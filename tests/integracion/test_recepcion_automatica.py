@@ -209,3 +209,6 @@ def test_el_mismo_archivo_copiado_dos_veces_seguidas_termina_en_recibidos_y_en_n
     with fabrica_bd() as sesion:
         ids = sesion.scalars(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero)).all()
     assert len(ids) == 1
+    # El contador ve cuál es la transacción original.
+    assert motivo["id_transaccion_existente"] == str(ids[0])
+    assert motivo["motivo"] == f"La factura {numero} ya fue registrada en la transacción {ids[0]}."

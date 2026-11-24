@@ -96,7 +96,7 @@ Por cada archivo `.xml` o `.pdf` nuevo en el primer nivel de la carpeta:
    - PDF que empiece con `%PDF-`, termine con `%%EOF` y se pueda abrir;
    - en ambos casos, que no esté vacío ni supere `TAMANO_MAXIMO_DOCUMENTO_MB`.
 3. **Lo procesa con el mismo flujo de la carga por la API**: clasificación híbrida y persistencia, con el documento original, sus eventos `RECIBIDA` (canal `carpeta`, **sin usuario**) y `CLASIFICADA`, y el rechazo de duplicados por número, CUFE o SHA-256.
-4. **Lo mueve** a `recibidos/` o, si falla, a `no_recibidos/` junto con `<archivo>.motivo.json` (fecha, motivo, tipo de error e intentos). Cada fallo deja además un registro de nivel **ERROR** en el log (la "alerta técnica" del manual). Nunca sobrescribe: si el nombre ya existe, agrega la fecha y la hora.
+4. **Lo mueve** a `recibidos/` o, si falla, a `no_recibidos/` junto con `<archivo>.motivo.json` (fecha, motivo, tipo de error e intentos; en un duplicado, además, `id_transaccion_existente`: la transacción original). Cada fallo deja además un registro de nivel **ERROR** en el log (la "alerta técnica" del manual). Nunca sobrescribe: si el nombre ya existe, agrega la fecha y la hora.
 
 **Reintentos:** solo ante una causa temporal, es decir, un archivo que aún se copia, está vacío o está bloqueado, o una base de datos que no responde. Se hacen `RECEPCION_REINTENTOS` intentos más, con espera creciente (1, 2, 4… s); agotados, el archivo va a `no_recibidos/`. Un documento inválido, duplicado o demasiado grande va directo a `no_recibidos/`.
 

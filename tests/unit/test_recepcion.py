@@ -143,6 +143,24 @@ def test_factura_duplicada_va_a_no_recibidos(carpetas):
     assert not recepcion.recibido
     motivo = _motivo(carpetas, "f.xml")
     assert (motivo["tipo_error"], motivo["motivo"]) == ("FacturaDuplicadaError", "La factura FV-1 ya fue registrada.")
+    assert motivo["id_transaccion_existente"] is None  # el error no trajo la transacción original
+
+
+def test_el_motivo_de_un_duplicado_trae_la_transaccion_original(carpetas, caplog):
+    original = uuid.uuid4()
+    mensaje = f"La factura FV-2002 ya fue registrada en la transacción {original}."
+    procesador = ProcesadorFalso(FacturaDuplicadaError(mensaje, original))
+    with caplog.at_level(logging.ERROR, logger="agente.recepcion"):
+        _receptor(carpetas, procesador).recibir(_dejar(carpetas, "FV-2002.xml", xml_factura("FV-2002")))
+    motivo = _motivo(carpetas, "FV-2002.xml")
+    assert motivo["id_transaccion_existente"] == str(original)
+    assert motivo["motivo"] == mensaje
+    assert str(original) in caplog.text
+
+
+def test_el_motivo_de_otros_errores_no_trae_transaccion_original(carpetas):
+    _receptor(carpetas).recibir(_dejar(carpetas, "malo.xml", b"<no-es-factura/>"))
+    assert "id_transaccion_existente" not in _motivo(carpetas, "malo.xml")
 
 
 def test_un_error_inesperado_no_pierde_el_archivo(carpetas):
