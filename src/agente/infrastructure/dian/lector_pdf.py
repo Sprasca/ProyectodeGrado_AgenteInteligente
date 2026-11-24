@@ -16,7 +16,7 @@ from pypdf import PdfReader
 
 from ...domain.enums import CondicionPago
 from ...domain.errors import ErrorDeDominio
-from ...domain.factura import Factura, Impuesto, LineaFactura, Tercero, numero_provisional
+from ...domain.factura import ORIGEN_PDF, Factura, Impuesto, LineaFactura, Tercero, numero_provisional
 
 
 class LectorPDFError(ErrorDeDominio):
@@ -208,5 +208,5 @@ def factura_desde_pdf(contenido: bytes) -> Factura:
         base_gravable=subtotal,
         total_con_impuestos=total if total > 0 else subtotal + iva,
         total_a_pagar=total if total > 0 else subtotal + iva,
-        extras={"origen": "pdf-local", "texto_extraido_chars": str(len(texto))},
+        extras={"origen": ORIGEN_PDF, "texto_extraido_chars": str(len(texto))},
     )
