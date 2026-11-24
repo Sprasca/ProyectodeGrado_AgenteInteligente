@@ -237,10 +237,15 @@ def clasificar_archivo(
     usar_nlp: bool = True,
     guardar: bool = True,
 ):
-    contenido = archivo.file.read()
     tipo = tipo_por_nombre(archivo.filename)
     if tipo is None:
         raise HTTPException(415, "Solo se aceptan archivos .xml o .pdf")
+    limite = get_settings().tamano_maximo_documento
+    contenido = archivo.file.read(limite + 1)  # nunca se lee más de lo permitido
+    if len(contenido) > limite:
+        raise HTTPException(
+            413, f"El archivo supera el tamaño máximo de {get_settings().tamano_maximo_documento_mb} MB."
+        )
     try:
         resultado = clasificar_documento(contenido, tipo, catalogo, usar_nlp=usar_nlp)
     except Exception as exc:

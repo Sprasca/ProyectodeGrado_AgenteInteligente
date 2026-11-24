@@ -45,6 +45,16 @@ class Settings:
             raise ValueError("CORS_ORIGENES no acepta '*': liste los orígenes permitidos, separados por comas.")
         # /carpeta/procesar solo lee carpetas dentro de este directorio.
         self.directorio_entrada = Path(obtener("DIRECTORIO_ENTRADA", str(self.directorio_facturas)))
+        # Tamaño máximo de un documento de factura (carga por la API y recepción automática).
+        tamano = obtener("TAMANO_MAXIMO_DOCUMENTO_MB", "10").strip()
+        if not tamano.isdigit() or int(tamano) <= 0:
+            raise ValueError(f"TAMANO_MAXIMO_DOCUMENTO_MB debe ser un número entero positivo, no {tamano!r}.")
+        self.tamano_maximo_documento_mb = int(tamano)
+
+    @property
+    def tamano_maximo_documento(self) -> int:
+        """En bytes."""
+        return self.tamano_maximo_documento_mb * 1024 * 1024
 
 
 @lru_cache
