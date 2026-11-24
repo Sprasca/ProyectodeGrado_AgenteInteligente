@@ -8,12 +8,19 @@ quedan en el log: WARNING si hay alertas sin resolver, ERROR ante un error de in
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
-from ..domain.errors import ConsolidacionBloqueadaError, ConsolidacionInconsistenteError, SinTransaccionesError
+from ..domain.errors import (
+    ConsolidacionBloqueadaError,
+    ConsolidacionInconsistenteError,
+    ExportacionFallidaError,
+    SinTransaccionesError,
+)
 from ..domain.jornada import fecha_jornada
 from ..domain.reportes import ReporteDiario
-from ..infrastructure.db.reportes import RepositorioReportes
+from ..infrastructure.db.reportes import GeneradorArchivo, RepositorioReportes
+from ..infrastructure.erp.xml_reporte import generar_xml_reporte
 
 log = logging.getLogger("agente.reportes")
 
@@ -53,3 +60,26 @@ def consolidar_reporte(
         reporte.total_debito,
     )
     return reporte
+
+
+def exportar_reporte(
+    repositorio: RepositorioReportes,
+    id_reporte: uuid.UUID,
+    *,
+    usuario_id: int | None,
+    generar: GeneradorArchivo = generar_xml_reporte,
+) -> ReporteDiario:
+    """
+    RF07: el contador autoriza y en el mismo paso se genera el XML; el reporte pasa a EXPORTADO.
+    Si la generación falla, el reporte sigue CONSOLIDADO y queda un ERROR en el log (anomalía 4).
+    """
+    try:
+        reporte = repositorio.exportar(id_reporte, usuario_id=usuario_id, generar=generar)
+    except ExportacionFallidaError as exc:
+        log.error("ALERTA TÉCNICA: exportación del reporte %s fallida (usuario %s): %s", id_reporte, usuario_id, exc)
+        raise
+    log.info(
+        "Reporte %s exportado por el usuario %s (SHA-256 %s).", reporte.id, usuario_id, reporte.archivo_sha256
+    )
+    return reporte
+

@@ -87,6 +87,15 @@ class ReporteDiario:
 
 
 @dataclass(frozen=True)
+class ArchivoExportado:
+    """El XML generado al exportar (RF07), con su huella SHA-256."""
+
+    nombre: str
+    contenido: bytes
+    sha256: str
+
+
+@dataclass(frozen=True)
 class EventoReporte:
     """Un cambio de estado del reporte. usuario_id es None si lo hizo el cierre programado."""
 
@@ -97,6 +106,10 @@ class EventoReporte:
     fecha: datetime | None
     motivo: str | None = None
     despues: dict[str, Any] | None = None
+
+
+def nombre_archivo_reporte(reporte: ReporteDiario) -> str:
+    return f"reporte-diario-{reporte.fecha_jornada.isoformat()}-{reporte.id.hex[:8]}.xml"
 
 
 def cuenta_de(codigo: str) -> str:
@@ -179,4 +192,22 @@ def exigir_sin_reporte(reporte_id: uuid.UUID | None, accion: str) -> None:
         raise TransicionInvalidaError(
             f"No se puede {accion} la transacción: pertenece al reporte {reporte_id}. "
             "Si el reporte está CONSOLIDADO, anúlelo primero; un reporte EXPORTADO no se puede anular."
+        )
+
+
+def validar_exportacion(estado: EstadoReporte) -> None:
+    """RF07 paso 4: solo un reporte CONSOLIDADO se exporta, y nunca dos veces."""
+    if estado is EstadoReporte.EXPORTADO:
+        raise TransicionInvalidaError("El reporte ya fue exportado: un reporte no se exporta dos veces.")
+    if estado is not EstadoReporte.CONSOLIDADO:
+        raise TransicionInvalidaError(f"Solo se exporta un reporte CONSOLIDADO; estado actual: {estado}.")
+
+
+def exigir_sin_alertas(estados: Iterable[EstadoTransaccion]) -> None:
+    """RF07 paso 4: ninguna transacción del reporte puede estar en alerta (ni fuera de los estados aprobados)."""
+    no_aprobadas = [e for e in estados if e not in ESTADOS_CONSOLIDABLES]
+    if no_aprobadas:
+        raise TransicionInvalidaError(
+            f"No se puede exportar: {len(no_aprobadas)} transacción(es) del reporte no están aprobadas "
+            f"({', '.join(sorted({e.value for e in no_aprobadas}))})."
         )

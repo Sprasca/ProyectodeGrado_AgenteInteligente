@@ -7,9 +7,10 @@ Las heredan test_repositorio_reportes_memoria.py (unitarias) y test_repositorio_
 - `id_usuario`: un usuario que exista; `nuevo_numero`: números de factura únicos.
 """
 
+import hashlib
 import time
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -18,6 +19,7 @@ from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado
 from agente.domain.enums import EstadoReporte, EstadoTransaccion, Naturaleza, TipoEvento
 from agente.domain.errors import (
     ConsolidacionBloqueadaError,
+    ExportacionFallidaError,
     ReporteNoEncontradoError,
     SinTransaccionesError,
     TransicionInvalidaError,
@@ -166,6 +168,82 @@ class ContratoReportes:
 
         assert transacciones.obtener(id_) == antes
         assert len(transacciones.eventos(id_)) == eventos_antes
+
+    # --- exportación (RF07) -----------------------------------------------------------------------------
+
+    def test_exportar_genera_el_archivo_y_registra_autor_fecha_y_sha256(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        ids = [_aprobada(transacciones, catalogo, nuevo_numero()) for _ in range(2)]
+        reporte = reportes.consolidar(corte=_corte(transacciones, *ids), fecha_jornada=JORNADA)
+        assert reportes.archivo(reporte.id) is None
+        recibido = {}
+
+        def generar(r, incluidas, autor, fecha):
+            recibido.update(reporte=r, ids=[t.id for t in incluidas], autor=autor, fecha=fecha)
+            return f"<xml>{r.id}</xml>".encode()
+
+        antes = datetime.now(UTC)
+        exportado = reportes.exportar(reporte.id, usuario_id=id_usuario, generar=generar)
+
+        contenido = f"<xml>{reporte.id}</xml>".encode()
+        assert exportado.estado is EstadoReporte.EXPORTADO
+        assert exportado.exportado_por == id_usuario
+        assert exportado.exportado_en == recibido["fecha"]
+        assert abs((exportado.exportado_en - antes).total_seconds()) < 60
+        assert exportado.archivo_sha256 == hashlib.sha256(contenido).hexdigest()
+        assert recibido["ids"] == list(reporte.transacciones) and recibido["autor"] == id_usuario
+        archivo = reportes.archivo(reporte.id)
+        assert (archivo.contenido, archivo.sha256) == (contenido, exportado.archivo_sha256)
+        assert archivo.nombre == f"reporte-diario-{JORNADA.isoformat()}-{reporte.id.hex[:8]}.xml"
+        assert reportes.obtener(reporte.id) == exportado
+        evento = reportes.eventos(reporte.id)[-1]
+        assert (evento.tipo, evento.usuario_id) == (EstadoReporte.EXPORTADO, id_usuario)
+        assert evento.despues == {"archivo": archivo.nombre, "bytes": len(contenido), "sha256": archivo.sha256}
+
+    def test_un_reporte_no_se_exporta_dos_veces(self, transacciones, reportes, catalogo, nuevo_numero, id_usuario):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        primero = reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<uno/>")
+        with pytest.raises(TransicionInvalidaError, match="no se exporta dos veces"):
+            reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<otro/>")
+        assert reportes.archivo(reporte.id).contenido == b"<uno/>"
+        assert reportes.obtener(reporte.id) == primero
+        assert [e.tipo for e in reportes.eventos(reporte.id)] == [EstadoReporte.CONSOLIDADO, EstadoReporte.EXPORTADO]
+
+    def test_si_falla_la_generacion_el_reporte_sigue_consolidado(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+
+        def falla(*_):
+            raise OSError("disco lleno")
+
+        with pytest.raises(ExportacionFallidaError, match="disco lleno"):
+            reportes.exportar(reporte.id, usuario_id=id_usuario, generar=falla)
+        assert reportes.obtener(reporte.id) == reporte
+        assert reportes.archivo(reporte.id) is None
+        assert [e.tipo for e in reportes.eventos(reporte.id)] == [EstadoReporte.CONSOLIDADO]
+        # Se puede volver a intentar.
+        assert reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<ok/>").estado is (
+            EstadoReporte.EXPORTADO
+        )
+
+    def test_exportar_un_reporte_inexistente(self, reportes, id_usuario):
+        with pytest.raises(ReporteNoEncontradoError):
+            reportes.exportar(uuid.uuid4(), usuario_id=id_usuario, generar=lambda *_: b"")
+        with pytest.raises(ReporteNoEncontradoError):
+            reportes.archivo(uuid.uuid4())
+
+    def test_una_transaccion_exportada_no_se_corrige(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<x/>")
+        with pytest.raises(TransicionInvalidaError, match="un reporte EXPORTADO no se puede anular"):
+            transacciones.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
 
     # --- consulta ------------------------------------------------------------------------------------
 

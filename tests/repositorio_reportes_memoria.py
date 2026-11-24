@@ -12,8 +12,21 @@ from repositorio_memoria import RepositorioMemoria
 
 from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento
 from agente.domain.errors import ConsolidacionBloqueadaError, ReporteNoEncontradoError, SinTransaccionesError
-from agente.domain.reportes import ESTADOS_CONSOLIDABLES, EventoReporte, ReporteDiario, consolidar_movimientos
-from agente.infrastructure.db.reportes import datos_consolidado
+from agente.domain.reportes import (
+    ESTADOS_CONSOLIDABLES,
+    ArchivoExportado,
+    EventoReporte,
+    ReporteDiario,
+    consolidar_movimientos,
+    exigir_sin_alertas,
+    validar_exportacion,
+)
+from agente.infrastructure.db.reportes import (
+    GeneradorArchivo,
+    datos_consolidado,
+    datos_exportacion,
+    generar_archivo,
+)
 
 
 class RepositorioReportesMemoria:
@@ -21,6 +34,7 @@ class RepositorioReportesMemoria:
         self.transacciones = transacciones
         self._reportes: dict[uuid.UUID, ReporteDiario] = {}
         self._eventos: list[EventoReporte] = []
+        self._archivos: dict[uuid.UUID, ArchivoExportado] = {}
         self._ids_evento = count(1)
 
     def _registrar(self, reporte_id, tipo, usuario_id, *, motivo=None, despues=None) -> None:
@@ -78,3 +92,26 @@ class RepositorioReportesMemoria:
     def eventos(self, id_reporte: uuid.UUID) -> list[EventoReporte]:
         self._cargar(id_reporte)
         return [e for e in self._eventos if e.reporte_id == id_reporte]
+
+    def exportar(self, id_reporte: uuid.UUID, *, usuario_id: int | None, generar: GeneradorArchivo) -> ReporteDiario:
+        reporte = self._cargar(id_reporte)
+        validar_exportacion(reporte.estado)
+        incluidas = [t for t in self.transacciones._por_id.values() if t.reporte_id == id_reporte]
+        incluidas.sort(key=lambda t: (t.creado_en, t.numero_factura))
+        exigir_sin_alertas(t.estado for t in incluidas)
+        ahora = datetime.now(UTC)
+        archivo = generar_archivo(generar, reporte, incluidas, usuario_id, ahora)
+        self._archivos[id_reporte] = archivo
+        self._reportes[id_reporte] = replace(
+            reporte,
+            estado=EstadoReporte.EXPORTADO,
+            exportado_en=ahora,
+            exportado_por=usuario_id,
+            archivo_sha256=archivo.sha256,
+        )
+        self._registrar(id_reporte, EstadoReporte.EXPORTADO, usuario_id, despues=datos_exportacion(archivo))
+        return self._reportes[id_reporte]
+
+    def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
+        self._cargar(id_reporte)
+        return self._archivos.get(id_reporte)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
@@ -10,20 +12,32 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento
-from ...domain.errors import ConsolidacionBloqueadaError, ReporteNoEncontradoError, SinTransaccionesError
+from ...domain.errors import (
+    ConsolidacionBloqueadaError,
+    ExportacionFallidaError,
+    ReporteNoEncontradoError,
+    SinTransaccionesError,
+)
 from ...domain.reportes import (
     ESTADOS_CONSOLIDABLES,
+    ArchivoExportado,
     Consolidado,
     EventoReporte,
     ReporteDiario,
     consolidar_movimientos,
+    exigir_sin_alertas,
     movimientos_a_json,
     movimientos_desde_json,
+    nombre_archivo_reporte,
     subtotales_a_json,
     subtotales_desde_json,
+    validar_exportacion,
 )
 from .models import EventoReporteModel, ReporteDiarioModel, ReporteTransaccionModel, TransaccionModel
-from .transacciones import a_registro, nuevo_evento, transaccion_bd
+from .transacciones import TransaccionRegistrada, a_registro, nuevo_evento, transaccion_bd
+
+# generar(reporte, transacciones, id del autor, fecha de autorización) -> contenido del archivo
+GeneradorArchivo = Callable[[ReporteDiario, Sequence[TransaccionRegistrada], int | None, datetime], bytes]
 
 
 class RepositorioReportes(Protocol):
@@ -46,6 +60,20 @@ class RepositorioReportes(Protocol):
 
     def eventos(self, id_reporte: uuid.UUID) -> list[EventoReporte]:
         """Cambios de estado, del más antiguo al más reciente. ReporteNoEncontradoError si no existe."""
+        ...
+
+    def exportar(self, id_reporte: uuid.UUID, *, usuario_id: int | None, generar: GeneradorArchivo) -> ReporteDiario:
+        """
+        RF07: el contador autoriza y, en el mismo paso, se genera el archivo y el reporte pasa a EXPORTADO,
+        con el autor, la fecha y hora y el SHA-256 del archivo (evento EXPORTADO).
+        - TransicionInvalidaError si no está CONSOLIDADO (un EXPORTADO no se exporta dos veces) o si
+          alguna de sus transacciones no está aprobada.
+        - ExportacionFallidaError si `generar` falla: el reporte sigue CONSOLIDADO, sin archivo (anomalía 4).
+        """
+        ...
+
+    def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
+        """El XML exportado, o None si el reporte no se ha exportado. ReporteNoEncontradoError si no existe."""
         ...
 
 
@@ -76,6 +104,27 @@ def _a_reporte(fila: ReporteDiarioModel, transacciones: list[uuid.UUID]) -> Repo
         exportado_por=fila.exportado_por,
         archivo_sha256=fila.archivo_sha256,
     )
+
+
+def datos_exportacion(archivo: ArchivoExportado) -> dict[str, Any]:
+    return {"archivo": archivo.nombre, "bytes": len(archivo.contenido), "sha256": archivo.sha256}
+
+
+def generar_archivo(
+    generar: GeneradorArchivo,
+    reporte: ReporteDiario,
+    transacciones: Sequence[TransaccionRegistrada],
+    usuario_id: int | None,
+    fecha: datetime,
+) -> ArchivoExportado:
+    """Llama al generador; cualquier falla se convierte en ExportacionFallidaError (RF07 anomalía 4)."""
+    try:
+        contenido = generar(reporte, transacciones, usuario_id, fecha)
+    except Exception as exc:
+        raise ExportacionFallidaError(
+            f"No se pudo generar el archivo del reporte {reporte.id}: {exc}. El reporte sigue CONSOLIDADO."
+        ) from exc
+    return ArchivoExportado(nombre_archivo_reporte(reporte), contenido, hashlib.sha256(contenido).hexdigest())
 
 
 def _a_evento(fila: EventoReporteModel) -> EventoReporte:
@@ -204,3 +253,42 @@ class RepositorioReportesSQL:
                 .order_by(EventoReporteModel.fecha, EventoReporteModel.id)
             )
             return [_a_evento(f) for f in filas]
+
+    def exportar(self, id_reporte: uuid.UUID, *, usuario_id: int | None, generar: GeneradorArchivo) -> ReporteDiario:
+        with transaccion_bd(self._fabrica) as sesion:
+            # FOR UPDATE: dos exportaciones simultáneas del mismo reporte no generan dos archivos.
+            fila = sesion.get(ReporteDiarioModel, id_reporte, with_for_update=True)
+            if fila is None:
+                raise ReporteNoEncontradoError(f"No existe el reporte {id_reporte}.")
+            validar_exportacion(EstadoReporte(fila.estado))
+            incluidas = list(
+                sesion.scalars(
+                    select(TransaccionModel)
+                    .options(selectinload(TransaccionModel.partidas))
+                    .where(TransaccionModel.reporte_id == id_reporte)
+                    .order_by(TransaccionModel.creado_en, TransaccionModel.numero_factura)
+                )
+            )
+            exigir_sin_alertas(EstadoTransaccion(t.estado) for t in incluidas)
+            reporte = _a_reporte(fila, [t.id for t in incluidas])
+            ahora = datetime.now(UTC)
+            archivo = generar_archivo(generar, reporte, [a_registro(t) for t in incluidas], usuario_id, ahora)
+            fila.estado = EstadoReporte.EXPORTADO.value
+            fila.archivo_xml = archivo.contenido
+            fila.archivo_sha256 = archivo.sha256
+            fila.exportado_en = ahora
+            fila.exportado_por = usuario_id
+            exportado = datos_exportacion(archivo)
+            sesion.add(_evento_reporte(fila.id, EstadoReporte.EXPORTADO, usuario_id, despues=exportado))
+            sesion.flush()
+            return _a_reporte(fila, reporte.transacciones)
+
+    def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
+        with transaccion_bd(self._fabrica) as sesion:
+            fila = sesion.get(ReporteDiarioModel, id_reporte)
+            if fila is None:
+                raise ReporteNoEncontradoError(f"No existe el reporte {id_reporte}.")
+            if fila.archivo_xml is None:
+                return None
+            reporte = _a_reporte(fila, [])
+            return ArchivoExportado(nombre_archivo_reporte(reporte), fila.archivo_xml, fila.archivo_sha256)
