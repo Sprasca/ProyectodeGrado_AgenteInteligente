@@ -1,5 +1,6 @@
 """Sprint 2: motor de reglas primero; Groq solo para las líneas que ninguna regla reconoce."""
 
+from collections.abc import Iterable
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -86,9 +87,10 @@ def procesar_carpeta(
     usar_nlp: bool = True,
     catalogo: CatalogoPUC | None = None,
     raiz: Path | None = None,
+    excluir: Iterable[Path] = (),
 ) -> list[dict]:
     salida: list[dict] = []
-    for item in leer_carpeta(carpeta, recursivo, raiz):
+    for item in leer_carpeta(carpeta, recursivo, raiz, excluir):
         if item.factura is None:
             salida.append({"archivo": item.ruta.name, "error": item.error})
         else:

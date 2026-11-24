@@ -263,12 +263,19 @@ def clasificar_archivo(
 
 @app.post("/carpeta/procesar", dependencies=[Autorizado])
 def clasificar_carpeta(solicitud: SolicitudCarpeta, catalogo: Catalogo):
-    """Solo carpetas dentro de DIRECTORIO_ENTRADA; fuera (incluso con "..") → 403."""
+    """
+    Solo carpetas dentro de DIRECTORIO_ENTRADA; fuera (incluso con "..") → 403. Con recursivo=true
+    se omiten recibidos/ y no_recibidos/ de la recepción automática.
+    """
     settings = get_settings()
     entrada = settings.directorio_entrada
     carpeta = carpeta_permitida(solicitud.ruta, entrada, settings.directorio_facturas)
     try:
-        resultados = procesar_carpeta(str(carpeta), solicitud.recursivo, solicitud.usar_nlp, catalogo, raiz=entrada)
+        # Con recursivo=true no se reprocesa lo que la recepción automática ya movió.
+        excluir = (settings.directorio_recibidos, settings.directorio_no_recibidos)
+        resultados = procesar_carpeta(
+            str(carpeta), solicitud.recursivo, solicitud.usar_nlp, catalogo, raiz=entrada, excluir=excluir
+        )
         return jsonable_encoder(resultados)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
