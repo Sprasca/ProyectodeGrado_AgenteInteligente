@@ -15,13 +15,13 @@ import logging
 import signal
 import threading
 
-from agente.application.recepcion import ConfiguracionRecepcion, ReceptorFacturas, procesador_por_defecto
+from agente.application.recepcion import ConfiguracionRecepcion, ReceptorFacturas, receptor_por_defecto
 from agente.config import get_settings
 from agente.infrastructure.recepcion.vigilante import VigilanteEntrada
 
 
 def construir_receptor(usar_nlp: bool = True) -> ReceptorFacturas:
-    return ReceptorFacturas(ConfiguracionRecepcion.desde_settings(get_settings()), procesador_por_defecto(usar_nlp))
+    return receptor_por_defecto(ConfiguracionRecepcion.desde_settings(get_settings()), usar_nlp)
 
 
 def main(argv: list[str] | None = None) -> int:

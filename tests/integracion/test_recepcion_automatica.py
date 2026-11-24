@@ -8,6 +8,7 @@ Las facturas usan números únicos ITEST-RECEP-... y se borran al terminar.
 import hashlib
 import importlib.util
 import json
+import logging
 import threading
 import time
 import uuid
@@ -22,8 +23,7 @@ from agente.application.clasificar_con_nlp import invalidar_catalogo
 from agente.application.recepcion import (
     SUFIJO_MOTIVO,
     ConfiguracionRecepcion,
-    ReceptorFacturas,
-    procesador_por_defecto,
+    receptor_por_defecto,
 )
 from agente.config import get_settings
 from agente.infrastructure.db.models import DocumentoModel, EventoTransaccionModel, TransaccionModel
@@ -79,9 +79,7 @@ def _esperar(condicion, segundos=20):
 @pytest.fixture
 def vigilante_en_marcha(entrada):
     """El vigilante real (watchdog) en un hilo, con el mismo procesador que usa scripts/recibir_facturas.py."""
-    vigilante = VigilanteEntrada(
-        ReceptorFacturas(_configuracion(entrada), procesador_por_defecto(usar_nlp=False)), intervalo=1
-    )
+    vigilante = VigilanteEntrada(receptor_por_defecto(_configuracion(entrada), usar_nlp=False), intervalo=1)
     detener = threading.Event()
     hilo = threading.Thread(target=vigilante.ejecutar, args=(detener,), daemon=True)
     hilo.start()
@@ -159,3 +157,29 @@ def test_script_una_vez_procesa_lo_que_ya_estaba_en_la_carpeta(entrada, fabrica_
     assert (entrada / "recibidos" / "pendiente.xml").exists()
     with fabrica_bd() as sesion:
         assert sesion.scalar(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero))
+
+
+def test_factura_registrada_que_no_se_alcanzo_a_mover_va_a_recibidos_sin_otra_transaccion(entrada, fabrica_bd, caplog):
+    """Caso límite: el proceso registró la factura pero se detuvo antes de moverla."""
+    numero = _numero()
+    contenido = xml_factura(numero)
+    receptor = receptor_por_defecto(_configuracion(entrada), usar_nlp=False)
+    (entrada / "sin-mover.xml").write_bytes(contenido)
+    assert receptor.recibir(entrada / "sin-mover.xml").recibido
+
+    # El mismo archivo, con el mismo nombre, vuelve a aparecer en la entrada.
+    (entrada / "sin-mover.xml").write_bytes(contenido)
+    with caplog.at_level(logging.WARNING, logger="agente.recepcion"):
+        recepcion = receptor.recibir(entrada / "sin-mover.xml")
+    assert recepcion.recibido and recepcion.destino.parent == entrada / "recibidos"
+    assert not (entrada / "no_recibidos").exists()
+    assert any(r.levelno == logging.WARNING and "ya estaba registrada" in r.getMessage() for r in caplog.records)
+
+    # Con otro nombre es un duplicado.
+    (entrada / "otro-nombre.xml").write_bytes(contenido)
+    assert not receptor.recibir(entrada / "otro-nombre.xml").recibido
+    assert (entrada / "no_recibidos" / "otro-nombre.xml").exists()
+
+    with fabrica_bd() as sesion:
+        ids = sesion.scalars(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero)).all()
+    assert len(ids) == 1 and recepcion.id_transaccion == ids[0]

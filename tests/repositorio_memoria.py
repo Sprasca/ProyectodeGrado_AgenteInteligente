@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from itertools import count
 
 from agente.domain.asiento import Partida
-from agente.domain.documento import DocumentoOriginal
+from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
 from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
@@ -23,6 +23,7 @@ from agente.infrastructure.db.transacciones import (
     CuentaNoSembradaError,
     EventoTransaccion,
     TransaccionRegistrada,
+    canal_de_recepcion,
     datos_clasificacion,
     datos_recepcion,
     detalle_lineas,
@@ -178,3 +179,14 @@ class RepositorioMemoria:
     def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
         self._cargar(id_transaccion)
         return self._documentos.get(id_transaccion)
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        for id_transaccion, documento in self._documentos.items():
+            if documento.sha256 == sha256:
+                recibida = next(
+                    (e for e in self._eventos if e.transaccion_id == id_transaccion and e.tipo is TipoEvento.RECIBIDA),
+                    None,
+                )
+                canal = canal_de_recepcion(recibida.despues if recibida else None)
+                return DocumentoRegistrado(id_transaccion, documento.nombre_archivo, canal)
+        return None

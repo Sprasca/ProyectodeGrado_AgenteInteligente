@@ -7,6 +7,11 @@ Por cada archivo XML o PDF que aparece en el directorio de entrada:
    con canal "carpeta" y sin usuario);
 4. lo mueve a recibidos/ o, si falla, a no_recibidos/ junto con un <archivo>.motivo.json, y deja
    un registro de nivel ERROR (la "alerta técnica" del manual).
+
+Si el documento (por su SHA-256) ya lo registró la propia recepción automática con el mismo nombre de
+archivo, es una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo
+entre el registro y el movimiento): se mueve a recibidos/ con un WARNING, sin crear otra transacción.
+Cualquier otro SHA-256 repetido es un duplicado y va a no_recibidos/.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import Settings
-from ..domain.documento import DocumentoOriginal
+from ..domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ..domain.enums import CanalRecepcion, TipoDocumento
 from ..infrastructure.db.transacciones import RepositorioNoDisponibleError
 from ..infrastructure.dian.documentos import tipo_por_nombre
@@ -34,10 +39,20 @@ SUFIJO_MOTIVO = ".motivo.json"
 
 # procesar(contenido, nombre_archivo, tipo) -> id de la transacción registrada
 Procesador = Callable[[bytes, str, TipoDocumento], uuid.UUID]
+# consultar_registro(sha256) -> quién tiene ya registrado ese documento, o None
+ConsultaRegistro = Callable[[str], DocumentoRegistrado | None]
 
 
 class ArchivoEnEscrituraError(Exception):
     """El archivo todavía se está copiando, está vacío o lo bloquea otro proceso."""
+
+
+class _YaRegistrada(Exception):
+    """La recepción automática ya registró este archivo (mismo SHA-256 y nombre), pero no lo movió."""
+
+    def __init__(self, registro: DocumentoRegistrado) -> None:
+        super().__init__(registro.transaccion_id)
+        self.registro = registro
 
 
 # Únicas causas que se reintentan: el archivo aún no se puede leer, o la base de datos no responde.
@@ -93,9 +108,11 @@ class ReceptorFacturas:
         procesar: Procesador,
         dormir: Callable[[float], None] = time.sleep,
         ahora: Callable[[], datetime] = lambda: datetime.now(UTC),
+        consultar_registro: ConsultaRegistro | None = None,
     ) -> None:
         self.configuracion = configuracion
         self._procesar = procesar
+        self._consultar_registro = consultar_registro
         self._dormir = dormir
         self._ahora = ahora
 
@@ -131,6 +148,8 @@ class ReceptorFacturas:
         while True:
             try:
                 id_transaccion = self._intentar(ruta)
+            except _YaRegistrada as ya:
+                return self._ya_registrada(ruta, ya.registro, intento)
             except FileNotFoundError:
                 log.warning("El archivo %s desapareció del directorio de entrada antes de procesarse.", ruta.name)
                 return Recepcion(ruta.name, False, None, motivo="El archivo desapareció antes de procesarse.")
@@ -167,7 +186,22 @@ class ReceptorFacturas:
             raise ValueError(f"Solo se reciben archivos .xml o .pdf: {ruta.name}")
         contenido = self._leer_cuando_termine_la_escritura(ruta)
         validar_documento(contenido, tipo, self.configuracion.tamano_maximo)
+        self._verificar_si_ya_se_registro(ruta, tipo, contenido)
         return self._procesar(contenido, ruta.name, tipo)
+
+    def _verificar_si_ya_se_registro(self, ruta: Path, tipo: TipoDocumento, contenido: bytes) -> None:
+        """_YaRegistrada si la recepción automática ya registró este mismo archivo (SHA-256 y nombre)."""
+        if self._consultar_registro is None:
+            return
+        documento = DocumentoOriginal.recibido(ruta.name, tipo, contenido)
+        registro = self._consultar_registro(documento.sha256)
+        if (
+            registro is not None
+            and registro.canal is CanalRecepcion.CARPETA
+            and registro.nombre_archivo == documento.nombre_archivo
+        ):
+            raise _YaRegistrada(registro)
+        # Cualquier otro SHA-256 repetido lo rechaza el repositorio al guardar (FacturaDuplicadaError).
 
     def _leer_cuando_termine_la_escritura(self, ruta: Path) -> bytes:
         """RF01 paso 3: no se lee hasta que el archivo deja de cambiar."""
@@ -188,6 +222,15 @@ class ReceptorFacturas:
             raise ArchivoEnEscrituraError(f"El archivo está bloqueado por otro proceso: {exc}") from exc
 
     # --- movimiento y registro del motivo ---------------------------------------------------------------
+
+    def _ya_registrada(self, ruta: Path, registro: DocumentoRegistrado, intentos: int) -> Recepcion:
+        destino = self._mover(ruta, self.configuracion.recibidos)
+        motivo = (
+            f"La factura ya estaba registrada por la recepción automática en la transacción "
+            f"{registro.transaccion_id}, pero el archivo no se había movido. No se creó una transacción nueva."
+        )
+        log.warning("%s: %s Se mueve a %s.", ruta.name, motivo, destino or "recibidos/ (no se pudo mover)")
+        return Recepcion(ruta.name, True, destino, registro.transaccion_id, motivo=motivo, intentos=intentos)
 
     def _no_recibido(self, ruta: Path, exc: Exception, intentos: int = 1) -> Recepcion:
         motivo = str(exc) or type(exc).__name__
@@ -224,6 +267,23 @@ class ReceptorFacturas:
         except OSError as exc:
             log.error("No se pudo mover %s a %s: %s", ruta.name, carpeta, exc)
             return None
+
+
+def consulta_por_defecto() -> ConsultaRegistro:
+    """Busca el SHA-256 en la base de datos (DATABASE_URL)."""
+    from ..infrastructure.db.session import fabrica_compartida
+    from ..infrastructure.db.transacciones import RepositorioSQL
+    from .clasificar_con_nlp import catalogo_por_defecto
+
+    def consultar(sha256: str) -> DocumentoRegistrado | None:
+        return RepositorioSQL(fabrica_compartida(), catalogo_por_defecto()).documento_registrado(sha256)
+
+    return consultar
+
+
+def receptor_por_defecto(configuracion: ConfiguracionRecepcion, usar_nlp: bool = True) -> ReceptorFacturas:
+    """El receptor que usa scripts/recibir_facturas.py: flujo de la API y consulta de lo ya registrado."""
+    return ReceptorFacturas(configuracion, procesador_por_defecto(usar_nlp), consultar_registro=consulta_por_defecto())
 
 
 def procesador_por_defecto(usar_nlp: bool = True) -> Procesador:

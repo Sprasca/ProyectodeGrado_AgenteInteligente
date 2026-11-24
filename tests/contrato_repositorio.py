@@ -498,6 +498,31 @@ class ContratoRepositorio:
         assert str(id_) in str(error.value)
         assert all(t.numero_factura != otro_numero for t in repo.listar())
 
+    def test_documento_registrado_por_sha256_con_nombre_y_canal(self, repo, nuevo_numero, catalogo):
+        contenido = f"<Invoice>{uuid.uuid4()}</Invoice>".encode()
+        documento = DocumentoOriginal.recibido("entrada/llego.xml", TipoDocumento.XML, contenido)
+        id_ = repo.guardar(
+            resultado_aprobado(catalogo, nuevo_numero()), documento=documento, canal=CanalRecepcion.CARPETA
+        )
+        registrado = repo.documento_registrado(documento.sha256)
+        assert (registrado.transaccion_id, registrado.nombre_archivo, registrado.canal) == (
+            id_,
+            "llego.xml",
+            CanalRecepcion.CARPETA,
+        )
+
+    def test_documento_registrado_por_api_y_sin_canal(self, repo, nuevo_numero, catalogo, id_usuario):
+        por_api = DocumentoOriginal.recibido("api.xml", TipoDocumento.XML, f"<a>{uuid.uuid4()}</a>".encode())
+        sin_canal = DocumentoOriginal.recibido("viejo.xml", TipoDocumento.XML, f"<b>{uuid.uuid4()}</b>".encode())
+        resultado = resultado_aprobado(catalogo, nuevo_numero())
+        repo.guardar(resultado, usuario_id=id_usuario, documento=por_api, canal=CanalRecepcion.API)
+        repo.guardar(resultado_aprobado(catalogo, nuevo_numero()), documento=sin_canal)
+        assert repo.documento_registrado(por_api.sha256).canal is CanalRecepcion.API
+        assert repo.documento_registrado(sin_canal.sha256).canal is None
+
+    def test_documento_no_registrado(self, repo):
+        assert repo.documento_registrado(hashlib.sha256(uuid.uuid4().bytes).hexdigest()) is None
+
     def test_documentos_distintos_no_chocan(self, repo, nuevo_numero, catalogo):
         for contenido in (b"<Invoice>uno</Invoice>", b"<Invoice>dos</Invoice>"):
             documento = DocumentoOriginal.recibido("f.xml", TipoDocumento.XML, contenido)

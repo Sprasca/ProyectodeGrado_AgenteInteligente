@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PureWindowsPath
 
-from .enums import TipoDocumento
+from .enums import CanalRecepcion, TipoDocumento
 
 LONGITUD_MAXIMA_NOMBRE = 255
 
@@ -36,3 +37,12 @@ class DocumentoOriginal:
     @classmethod
     def recibido(cls, nombre: str | None, tipo: TipoDocumento, contenido: bytes) -> DocumentoOriginal:
         return cls(nombre_archivo_seguro(nombre, tipo), tipo, contenido)
+
+
+@dataclass(frozen=True)
+class DocumentoRegistrado:
+    """Quién tiene ya registrado un documento (por su SHA-256): la transacción, el nombre y el canal de llegada."""
+
+    transaccion_id: uuid.UUID
+    nombre_archivo: str
+    canal: CanalRecepcion | None

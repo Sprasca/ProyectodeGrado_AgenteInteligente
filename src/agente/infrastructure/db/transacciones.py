@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
-from ...domain.documento import DocumentoOriginal
+from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
@@ -104,6 +104,10 @@ class RepositorioTransacciones(Protocol):
 
     def documento(self, id_transaccion: uuid.UUID) -> DocumentoOriginal | None:
         """El archivo original, o None si no se guardó. TransaccionNoEncontradaError si no existe."""
+        ...
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        """La transacción que ya tiene un documento con ese SHA-256 (con su nombre y canal), o None."""
         ...
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None: ...
@@ -202,6 +206,12 @@ def datos_recepcion(
             "sha256": documento.sha256,
         }
     return datos
+
+
+def canal_de_recepcion(despues: dict[str, Any] | None) -> CanalRecepcion | None:
+    """El canal guardado en el evento RECIBIDA (None en registros anteriores al canal)."""
+    valor = (despues or {}).get("canal")
+    return CanalRecepcion(valor) if valor in {c.value for c in CanalRecepcion} else None
 
 
 def documento_duplicado(sha256: str, id_existente: uuid.UUID | None = None) -> FacturaDuplicadaError:
@@ -505,3 +515,20 @@ class RepositorioSQL:
             if fila is None:
                 return None
             return DocumentoOriginal(fila.nombre_archivo, TipoDocumento(fila.tipo), fila.contenido, fila.recibido_en)
+
+    def documento_registrado(self, sha256: str) -> DocumentoRegistrado | None:
+        with self._transaccion() as sesion:
+            fila = sesion.execute(
+                select(DocumentoModel.transaccion_id, DocumentoModel.nombre_archivo, EventoTransaccionModel.despues)
+                .outerjoin(
+                    EventoTransaccionModel,
+                    (EventoTransaccionModel.transaccion_id == DocumentoModel.transaccion_id)
+                    & (EventoTransaccionModel.tipo == TipoEvento.RECIBIDA.value),
+                )
+                .where(DocumentoModel.sha256 == sha256)
+                .order_by(EventoTransaccionModel.id)
+                .limit(1)
+            ).first()
+            if fila is None:
+                return None
+            return DocumentoRegistrado(fila.transaccion_id, fila.nombre_archivo, canal_de_recepcion(fila.despues))
