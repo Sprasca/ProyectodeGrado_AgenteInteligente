@@ -11,6 +11,7 @@ from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
 from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.puc import CatalogoPUC
+from agente.domain.reportes import exigir_sin_reporte
 from agente.domain.resultado import ResultadoClasificacion
 from agente.domain.transacciones import (
     exigir_motivo,
@@ -138,6 +139,7 @@ class RepositorioMemoria:
     ) -> TransaccionRegistrada:
         motivo = exigir_motivo(motivo, "corregir")
         t = self._cargar(id_transaccion)
+        exigir_sin_reporte(t.reporte_id, "corregir")
         asiento = validar_correccion(t.estado, partidas, self._catalogo)
         self._verificar_llave_foranea(asiento.partidas)
         self._por_id[t.id] = replace(
@@ -162,6 +164,7 @@ class RepositorioMemoria:
     ) -> TransaccionRegistrada:
         motivo = exigir_motivo(motivo, "rechazar")
         t = self._cargar(id_transaccion)
+        exigir_sin_reporte(t.reporte_id, "rechazar")
         validar_rechazo(t.estado)
         self._por_id[t.id] = replace(t, estado=EstadoTransaccion.RECHAZADA)
         self._registrar(

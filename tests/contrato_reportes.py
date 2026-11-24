@@ -16,7 +16,12 @@ import pytest
 from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
 
 from agente.domain.enums import EstadoReporte, EstadoTransaccion, Naturaleza, TipoEvento
-from agente.domain.errors import ConsolidacionBloqueadaError, ReporteNoEncontradoError, SinTransaccionesError
+from agente.domain.errors import (
+    ConsolidacionBloqueadaError,
+    ReporteNoEncontradoError,
+    SinTransaccionesError,
+    TransicionInvalidaError,
+)
 
 JORNADA = date(2026, 11, 24)
 MOTIVO = "Motivo de prueba del contrato"
@@ -141,6 +146,26 @@ class ContratoReportes:
         reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA, usuario_id=None)
         assert reportes.eventos(reporte.id)[0].usuario_id is None
         assert transacciones.eventos(id_)[-1].usuario_id is None
+
+    # --- con reporte vigente no se corrige ni se rechaza (requisito 4) ----------------------------------
+
+    @pytest.mark.parametrize("accion", ["corregir", "rechazar"])
+    def test_con_reporte_vigente_no_se_corrige_ni_se_rechaza(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario, accion
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())  # APROBADA_AUTOMATICA: hoy sí es corregible
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        antes = transacciones.obtener(id_)
+        eventos_antes = len(transacciones.eventos(id_))
+
+        with pytest.raises(TransicionInvalidaError, match=f"pertenece al reporte {reporte.id}"):
+            if accion == "corregir":
+                transacciones.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
+            else:
+                transacciones.rechazar(id_, motivo=MOTIVO, usuario_id=id_usuario)
+
+        assert transacciones.obtener(id_) == antes
+        assert len(transacciones.eventos(id_)) == eventos_antes
 
     # --- consulta ------------------------------------------------------------------------------------
 

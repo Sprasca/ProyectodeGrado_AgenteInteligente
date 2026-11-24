@@ -19,6 +19,7 @@ from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.puc import CatalogoPUC
+from ...domain.reportes import exigir_sin_reporte
 from ...domain.resultado import ResultadoClasificacion
 from ...domain.transacciones import (
     exigir_motivo,
@@ -145,6 +146,7 @@ class RepositorioTransacciones(Protocol):
     ) -> TransaccionRegistrada:
         """
         Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR, con evento CORREGIDA.
+        Con reporte vigente (RF06) no se corrige: TransicionInvalidaError.
         Exige un motivo de al menos 10 caracteres (MotivoInvalidoError).
 
         Antes guarda en asiento_propuesto las partidas del agente (solo si aún no hay una
@@ -157,7 +159,8 @@ class RepositorioTransacciones(Protocol):
     ) -> TransaccionRegistrada:
         """
         EN_ALERTA o APROBADA_AUTOMATICA → RECHAZADA (estado final), con evento RECHAZADA.
-        Exige un motivo de al menos 10 caracteres. Desde otro estado: TransicionInvalidaError.
+        Exige un motivo de al menos 10 caracteres. Desde otro estado, o con reporte vigente (RF06):
+        TransicionInvalidaError.
         """
         ...
 
@@ -484,6 +487,7 @@ class RepositorioSQL:
         try:
             with self._transaccion() as sesion:
                 t = self._cargar(sesion, id_transaccion)
+                exigir_sin_reporte(t.reporte_id, "corregir")
                 asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
                 previas = a_registro(t)
                 if t.asiento_propuesto is None:
@@ -513,6 +517,7 @@ class RepositorioSQL:
         motivo = exigir_motivo(motivo, "rechazar")
         with self._transaccion() as sesion:
             t = self._cargar(sesion, id_transaccion)
+            exigir_sin_reporte(t.reporte_id, "rechazar")
             validar_rechazo(EstadoTransaccion(t.estado))
             antes = {"estado": t.estado}
             t.estado = EstadoTransaccion.RECHAZADA.value
