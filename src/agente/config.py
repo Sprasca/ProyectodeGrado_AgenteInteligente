@@ -50,6 +50,11 @@ class Settings:
         if not tamano.isdigit() or int(tamano) <= 0:
             raise ValueError(f"TAMANO_MAXIMO_DOCUMENTO_MB debe ser un número entero positivo, no {tamano!r}.")
         self.tamano_maximo_documento_mb = int(tamano)
+        # Recepción automática (RF01): adónde van los archivos procesados y los que fallan.
+        self.directorio_recibidos = Path(obtener("DIRECTORIO_RECIBIDOS", str(self.directorio_entrada / "recibidos")))
+        self.directorio_no_recibidos = Path(
+            obtener("DIRECTORIO_NO_RECIBIDOS", str(self.directorio_entrada / "no_recibidos"))
+        )
 
     @property
     def tamano_maximo_documento(self) -> int:
