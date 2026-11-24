@@ -48,7 +48,7 @@ uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira
 | `JWT_MINUTOS` | Vigencia del token, en minutos (60 por defecto) |
 | `FUENTE_CATALOGO` | `bd` (por defecto) o `csv` (ver abajo) |
 | `CORS_ORIGENES` | Orígenes del navegador que pueden llamar la API, separados por comas. **Vacío por defecto**: ninguno. No acepta `*` |
-| `DIRECTORIO_FACTURAS` | Carpeta que procesa `/carpeta/procesar` si no se indica otra |
+| `DIRECTORIO_FACTURAS` | Carpeta que procesa `/carpeta/procesar` si no se indica otra. En `.env.example`, `./entrada`: una carpeta local fuera de git (solo se versiona `entrada/.gitkeep`). `facturas/` guarda solo los ejemplos de las pruebas |
 | `DIRECTORIO_ENTRADA` | Directorio que vigila la recepción automática (RF01). `/carpeta/procesar` solo acepta carpetas dentro de él (por defecto, `DIRECTORIO_FACTURAS`); una ruta fuera, incluso con `..`, responde **403** |
 | `DIRECTORIO_RECIBIDOS`, `DIRECTORIO_NO_RECIBIDOS` | Adónde mueve la recepción automática los archivos procesados y los que fallan (por defecto, `recibidos/` y `no_recibidos/` dentro de `DIRECTORIO_ENTRADA`) |
 | `RECEPCION_REINTENTOS`, `RECEPCION_ESPERA_INICIAL` | Reintentos ante una causa temporal (3) y espera antes del primero, en segundos (1); la espera se duplica en cada reintento |
