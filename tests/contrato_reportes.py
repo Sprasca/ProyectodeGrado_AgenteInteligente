@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
 
+from agente.domain.asiento import Partida
 from agente.domain.enums import EstadoReporte, EstadoTransaccion, Naturaleza, TipoEvento, TipoReporte
 from agente.domain.errors import (
     ConsolidacionBloqueadaError,
@@ -280,6 +281,17 @@ class ContratoReportes:
 
         assert self.t.obtener(id_) == antes
         assert len(self.t.eventos(id_)) == eventos_antes
+
+    def test_el_bloqueo_por_reporte_se_revisa_antes_que_las_cuentas(self, id_usuario):
+        """Con cuentas que no existen, el motivo del rechazo sigue siendo el reporte, no la cuenta."""
+        id_ = self.aprobada()
+        reporte = self.parcial()
+        inexistentes = [
+            Partida("999999", Naturaleza.DEBITO, Decimal("119000.00"), "No existe"),
+            Partida("4135", Naturaleza.CREDITO, Decimal("119000.00"), "Ingreso"),
+        ]
+        with pytest.raises(TransicionInvalidaError, match=f"pertenece al reporte {reporte.id}"):
+            self.t.corregir(id_, inexistentes, motivo=MOTIVO, usuario_id=id_usuario)
 
     # --- exportación (RF07) -----------------------------------------------------------------------------
 
