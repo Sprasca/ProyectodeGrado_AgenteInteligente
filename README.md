@@ -4,7 +4,7 @@ Proyecto de grado, Ingeniería de Sistemas, Universidad de Cartagena.
 
 El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la interpreta, propone el asiento contable bajo el PUC del Grupo 2 y deja en alerta lo que no clasifica con suficiente confianza.
 
-## Estado: Fase 3 (recepción automática, RF01) En Pruebas
+## Estado: Fase 4 (reporte diario y exportación, RF06 y RF07) En Pruebas
 
 | Componente | Estado |
 |---|---|
@@ -21,7 +21,7 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | Caso de uso `clasificar_hibrido` (reglas + Groq para líneas sin regla) | Listo, con pruebas |
 | API HTTP (FastAPI) | Listo, con pruebas |
 | NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba |
-| Reporte diario, exportación al ERP | Sprint 3 |
+| Reporte diario: consolidación manual y cierre programado (RF06), exportación a XML (RF07), anulación | Listo, con pruebas unitarias y de integración |
 
 > El catálogo de `data/puc/` es una **semilla** de cuentas de ingresos por ventas. Las facturas de `tests/fixtures/` son sintéticas, no documentos reales. La carpeta de facturas almacena documentos sintéticos y reales que se usan como ejemplo para las pruebas.
 
@@ -36,7 +36,7 @@ cp .env.example .env
 uv run python -c "import secrets; print(secrets.token_urlsafe(48))"
 uv sync
 docker compose up -d db
-uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0008)
+uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0009)
 uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira reglas obsoletas
 ```
 
@@ -53,6 +53,7 @@ uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira
 | `DIRECTORIO_RECIBIDOS`, `DIRECTORIO_NO_RECIBIDOS` | Adónde mueve la recepción automática los archivos procesados y los que fallan (por defecto, `recibidos/` y `no_recibidos/` dentro de `DIRECTORIO_ENTRADA`) |
 | `RECEPCION_REINTENTOS`, `RECEPCION_ESPERA_INICIAL` | Reintentos ante una causa temporal (3) y espera antes del primero, en segundos (1); la espera se duplica en cada reintento |
 | `RECEPCION_ESPERA_ESTABILIDAD` | Segundos que un archivo debe dejar de cambiar para considerar terminada su copia (1) |
+| `HORA_CIERRE` | Hora de Colombia (`America/Bogota`), `HH:MM`, del cierre diario programado (`18:00`) |
 | `TAMANO_MAXIMO_DOCUMENTO_MB` | Tamaño máximo de un documento de factura, en MB (10). En la API, uno mayor responde **413** |
 | `UMBRAL_CONFIANZA`, `GROQ_API_KEY`, `GROQ_MODELO` | Clasificación y sugerencias de Groq |
 
@@ -139,6 +140,9 @@ Están definidos en un solo lugar: [src/agente/api/permisos.py](src/agente/api/p
 | Consultar transacciones, eventos, documentos, cuentas y reglas (todos los `GET` de esas rutas) | ✓ | ✓ | |
 | Aprobar, corregir y rechazar transacciones | ✓ | | |
 | Crear cuentas; crear, editar, activar y desactivar reglas | ✓ | | |
+| Consolidar el reporte diario (`POST /reportes/consolidar`) | ✓ | ✓ | |
+| Consultar reportes y descargar el XML exportado (todos los `GET /reportes...`) | ✓ | ✓ | |
+| Exportar (autorizar) y anular reportes | ✓ | | |
 | Usuarios: `GET`, `POST` y `PUT /usuarios` (crear, desactivar, cambiar rol) | | | ✓ |
 
 ## API
@@ -159,7 +163,7 @@ Documentación interactiva en http://127.0.0.1:8000/docs.
 | `POST /transacciones/{id}/rechazar` | `EN_ALERTA` o `APROBADA_AUTOMATICA` → `RECHAZADA` (estado final): `{"motivo": "..."}` |
 | `GET /usuarios`, `POST /usuarios`, `PUT /usuarios/{id}` | Administración de usuarios (ADMIN). `PUT` acepta `rol`, `activo` y `nombre_completo` |
 
-Corregir y rechazar exigen un **motivo de al menos 10 caracteres** (si no, **422**). Una transacción `RECHAZADA` no admite más acciones (**409**).
+Corregir y rechazar exigen un **motivo de al menos 10 caracteres** (si no, **422**). Una transacción `RECHAZADA` no admite más acciones (**409**). Una transacción con **reporte vigente** (`reporte_id`) no se puede corregir ni rechazar (**409**); si su reporte está `CONSOLIDADO`, se libera anulándolo.
 
 ### Trazabilidad
 Cada acción sobre una transacción deja un evento en `evento_transaccion`, en la **misma transacción de base de datos** que el cambio (o queda todo, o no queda nada):
@@ -169,8 +173,46 @@ Cada acción sobre una transacción deja un evento en `evento_transaccion`, en l
 | `RECIBIDA` | Al guardar la factura (canal `api` o `carpeta`; nombre, tamaño y SHA-256 del archivo) | Quien la cargó; ninguno en la recepción automática |
 | `CLASIFICADA` | Al guardar (estado, confianza, reglas y partidas propuestas) | Ninguno: automático |
 | `APROBADA`, `CORREGIDA`, `RECHAZADA` | Acciones del contador, con el motivo y el antes/después | El contador |
+| `CONSOLIDADA` | Al incluirla en un reporte diario (id del reporte y fecha de la jornada) | Quien consolidó; ninguno en el cierre programado |
+| `LIBERADA` | Al anular su reporte, con el motivo | El contador |
 
 Los eventos y el documento original no se borran en cascada con la transacción. Los cambios de reglas quedan en `historial_regla` con el usuario autenticado.
+
+### Reporte de transacciones diarias (RF06 y RF07)
+| Método y ruta | Descripción |
+|---|---|
+| `POST /reportes/consolidar` | Cierra la jornada con lo recibido hasta ahora (**201**). Con alertas sin resolver → **409** con `pendientes`; sin nada que consolidar → **409** (no se crea un reporte vacío); débitos ≠ créditos → **500** |
+| `GET /reportes?estado=CONSOLIDADO` | Lista los reportes, del más reciente al más antiguo, con filtro opcional por estado |
+| `GET /reportes/{id}` | Totales por código registrado (`movimientos`), subtotales por cuenta de 4 dígitos, número de transacciones, valor total y la lista de transacciones |
+| `GET /reportes/{id}/eventos` | Cambios de estado: quién (`null` si fue el cierre programado), cuándo y por qué |
+| `POST /reportes/{id}/exportar` | El contador autoriza y en el mismo paso se genera el XML: `CONSOLIDADO` → `EXPORTADO`, con autor, fecha y hora y SHA-256. Ya exportado o anulado → **409**; falla la generación → **500** y el reporte sigue `CONSOLIDADO` |
+| `GET /reportes/{id}/xml` | Descarga el XML exportado para cargarlo en el ERP (SHA-256 en `X-Contenido-SHA256`); sin exportar → **404** |
+| `POST /reportes/{id}/anular` | `CONSOLIDADO` → `ANULADO` con `{"motivo": "..."}` (mínimo 10 caracteres). Libera sus transacciones. Un `EXPORTADO` nunca se anula (**409**) |
+
+**Qué entra en el reporte.** Las transacciones `APROBADA_AUTOMATICA`, `APROBADA_CONTADOR` y `CORREGIDA_CONTADOR` recibidas hasta el corte que aún no tengan reporte; las `RECHAZADAS` no entran. Así, una factura que llega después del corte queda en el reporte siguiente. Una transacción `EN_ALERTA` recibida hasta el corte **bloquea** la consolidación, aunque sea de un día anterior. Cada transacción queda ligada a un solo reporte vigente.
+
+**Jornada.** El día se corta en hora de Colombia (`America/Bogota`), no en UTC. La fecha de la jornada es la fecha del corte en Colombia.
+
+**Agrupación.** Por el código registrado en cada partida (cuenta de 4 dígitos o subcuenta de 6), con subtotales por cuenta de 4 dígitos. La suma de débitos debe ser igual a la de créditos; si no, la consolidación se aborta (error de integridad).
+
+**Estados.** `CONSOLIDADO` → `EXPORTADO` (final) o `CONSOLIDADO` → `ANULADO` (final). Cada cambio queda en `evento_reporte` con el usuario y la fecha y hora; el vínculo entre reporte y transacciones queda en `reporte_transaccion`, que no se borra.
+
+**Cierre programado.** `scripts/recibir_facturas.py` (el mismo proceso del vigilante) consolida sin usuario a la `HORA_CIERRE`, con corte en esa hora. Hace un intento por jornada; si el proceso no estaba corriendo a esa hora, lo hace al arrancar. Con `--sin-cierre` no cierra, y `--una-vez` nunca cierra.
+
+**Avisos.** Hasta que exista el módulo de notificaciones (Fase 5), lo que el manual pide notificar queda en el log `agente.reportes`: **WARNING** con el número de alertas pendientes, **ERROR** ("ALERTA TÉCNICA") ante un descuadre o una exportación fallida, **INFO** cuando no hay nada que consolidar.
+
+#### Ampliaciones respecto al manual
+- **Estado `ANULADO`.** El manual solo define Consolidado y Exportado. Anular permite corregir una transacción ya consolidada: solo se anula un `CONSOLIDADO`, con motivo obligatorio, y sus transacciones quedan libres (`reporte_id` nulo, evento `LIBERADA`). El reporte anulado conserva su lista de transacciones y sus totales.
+- **Estructura del XML.** El manual pide un XML "con la estructura que admite el sistema contable", pero no la define. Esta es una estructura **propia y versionada** (`version="1.0"`, espacio de nombres `urn:agente-inteligente:reporte-diario:1.0`), definida en [src/agente/infrastructure/erp/xml_reporte.py](src/agente/infrastructure/erp/xml_reporte.py):
+  - `Encabezado`: id, fecha de la jornada, corte, número de transacciones, valor total, total débito y crédito, moneda (COP), quién autorizó y cuándo (hora de Colombia);
+  - `Movimientos`: un movimiento por código registrado, con débito y crédito;
+  - `Subtotales`: uno por cuenta de 4 dígitos;
+  - `Detalle`: respaldo por transacción, con comprobante (número de factura), fecha, **NIT del tercero** (el adquirente de la factura), valor total y sus partidas (cuenta, descripción, débito y crédito).
+
+#### Decisiones pendientes con el contador
+- **Tercero en los totales.** Hoy los totales van por código y el NIT del tercero solo aparece en el detalle de respaldo. Falta saber si el ERP exige el tercero en cada movimiento, es decir, totales por cuenta y NIT.
+- **Agrupación.** ¿Le sirve agrupar por el código registrado con subtotales por cuenta de 4 dígitos?
+- **Reporte vacío.** Hoy un cierre sin transacciones no crea un reporte, solo un registro en el log.
 
 ### Catálogo y reglas (RF09)
 El contador administra cuentas y reglas sin tocar código. Cada creación, edición, activación o desactivación de una regla queda en `historial_regla` (acción, antes, después, usuario y fecha).
@@ -196,7 +238,7 @@ Al crear o editar una regla:
 uv run pytest                    # unitarias: no requieren red, Groq ni PostgreSQL
 uv run pytest -m integracion     # integración contra PostgreSQL real (DATABASE_URL)
 ```
-Las pruebas unitarias fijan `FUENTE_CATALOGO=csv` y su propio `JWT_SECRETO`, y usan usuarios de prueba en memoria (uno por rol). Las de integración necesitan la base levantada, migrada y sembrada (ver *Puesta en marcha*); si no hay conexión se saltan con un aviso. Crean sus propios usuarios, reglas, cuentas y transacciones con códigos únicos y los borran al terminar.
+Las pruebas unitarias fijan `FUENTE_CATALOGO=csv` y su propio `JWT_SECRETO`, y usan usuarios de prueba en memoria (uno por rol). Las de integración necesitan la base levantada, migrada y sembrada (ver *Puesta en marcha*); si no hay conexión se saltan con un aviso. Crean sus propios usuarios, reglas, cuentas y transacciones con códigos únicos y los borran al terminar. Las de reportes y migraciones crean una **base temporal** en el mismo servidor (`agente_prueba_...`) y la eliminan al terminar: una consolidación toma todas las transacciones aprobadas sin reporte, así que no pueden correr sobre la base de quien las ejecuta. Por eso el usuario de `DATABASE_URL` necesita permiso para crear bases de datos.
 
 ## Integración continua
 Cada push y pull request ejecuta [.github/workflows/pruebas.yml](.github/workflows/pruebas.yml) en GitHub Actions. El job levanta un servicio PostgreSQL (`pgvector/pgvector:pg16`, usuario, contraseña y base `agente`), define `DATABASE_URL` y un `JWT_SECRETO` de prueba, y corre: `uv sync`, `uv run ruff check .`, `uv run pytest`, `uv run alembic upgrade head`, `uv run python scripts/sembrar_puc.py` y `uv run pytest -m integracion`. Un cambio en `data/puc/` que deje el catálogo inconsistente (códigos repetidos o reglas que apunten a cuentas que no son de ingreso) hace fallar el job.
