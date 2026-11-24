@@ -10,6 +10,16 @@ RAIZ = Path(__file__).resolve().parents[2]
 FUENTES_CATALOGO = ("bd", "csv")
 
 
+def _segundos(valor: str, nombre: str) -> float:
+    try:
+        segundos = float(valor)
+    except ValueError:
+        segundos = -1.0
+    if segundos < 0:
+        raise ValueError(f"{nombre} debe ser un número de segundos mayor o igual a 0, no {valor!r}.")
+    return segundos
+
+
 class Settings:
     def __init__(self) -> None:
         valores_env: dict[str, str] = {}
@@ -54,6 +64,14 @@ class Settings:
         self.directorio_recibidos = Path(obtener("DIRECTORIO_RECIBIDOS", str(self.directorio_entrada / "recibidos")))
         self.directorio_no_recibidos = Path(
             obtener("DIRECTORIO_NO_RECIBIDOS", str(self.directorio_entrada / "no_recibidos"))
+        )
+        reintentos = obtener("RECEPCION_REINTENTOS", "3").strip()
+        if not reintentos.isdigit():
+            raise ValueError(f"RECEPCION_REINTENTOS debe ser un número entero mayor o igual a 0, no {reintentos!r}.")
+        self.recepcion_reintentos = int(reintentos)
+        self.recepcion_espera_inicial = _segundos(obtener("RECEPCION_ESPERA_INICIAL", "1"), "RECEPCION_ESPERA_INICIAL")
+        self.recepcion_espera_estabilidad = _segundos(
+            obtener("RECEPCION_ESPERA_ESTABILIDAD", "1"), "RECEPCION_ESPERA_ESTABILIDAD"
         )
 
     @property

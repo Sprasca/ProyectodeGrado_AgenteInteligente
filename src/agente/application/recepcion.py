@@ -24,6 +24,7 @@ from pathlib import Path
 from ..config import Settings
 from ..domain.documento import DocumentoOriginal
 from ..domain.enums import CanalRecepcion, TipoDocumento
+from ..infrastructure.db.transacciones import RepositorioNoDisponibleError
 from ..infrastructure.dian.documentos import tipo_por_nombre
 from ..infrastructure.dian.validacion import validar_documento
 
@@ -39,6 +40,10 @@ class ArchivoEnEscrituraError(Exception):
     """El archivo todavía se está copiando, está vacío o lo bloquea otro proceso."""
 
 
+# Únicas causas que se reintentan: el archivo aún no se puede leer, o la base de datos no responde.
+ERRORES_TEMPORALES = (ArchivoEnEscrituraError, RepositorioNoDisponibleError)
+
+
 @dataclass(frozen=True)
 class ConfiguracionRecepcion:
     entrada: Path
@@ -47,6 +52,10 @@ class ConfiguracionRecepcion:
     tamano_maximo: int
     # Segundos que el tamaño y la fecha del archivo deben mantenerse para dar la escritura por concluida.
     espera_estabilidad: float = 1.0
+    # Reintentos ante una causa temporal (RF01 1.a): archivo bloqueado o incompleto, base de datos sin respuesta.
+    reintentos: int = 3
+    # Espera antes del primer reintento; se duplica en cada uno (espera incremental): 1, 2, 4... segundos.
+    espera_inicial: float = 1.0
 
     @classmethod
     def desde_settings(cls, settings: Settings) -> ConfiguracionRecepcion:
@@ -55,7 +64,14 @@ class ConfiguracionRecepcion:
             recibidos=settings.directorio_recibidos,
             no_recibidos=settings.directorio_no_recibidos,
             tamano_maximo=settings.tamano_maximo_documento,
+            espera_estabilidad=settings.recepcion_espera_estabilidad,
+            reintentos=settings.recepcion_reintentos,
+            espera_inicial=settings.recepcion_espera_inicial,
         )
+
+    def espera_antes_del_reintento(self, reintento: int) -> float:
+        """reintento = 1, 2, 3... → espera_inicial, el doble, el cuádruple..."""
+        return self.espera_inicial * 2 ** (reintento - 1)
 
 
 @dataclass(frozen=True)
@@ -107,26 +123,51 @@ class ReceptorFacturas:
     # --- recepción de un archivo ------------------------------------------------------------------
 
     def recibir(self, ruta: Path) -> Recepcion:
-        try:
-            tipo = tipo_por_nombre(ruta.name)
-            if tipo is None:
-                raise ValueError(f"Solo se reciben archivos .xml o .pdf: {ruta.name}")
-            contenido = self._leer_cuando_termine_la_escritura(ruta)
-            validar_documento(contenido, tipo, self.configuracion.tamano_maximo)
-            id_transaccion = self._procesar(contenido, ruta.name, tipo)
-        except FileNotFoundError:
-            log.warning("El archivo %s desapareció del directorio de entrada antes de procesarse.", ruta.name)
-            return Recepcion(ruta.name, False, None, motivo="El archivo desapareció antes de procesarse.")
-        except Exception as exc:  # cualquier otro fallo: el archivo no se pierde, va a no_recibidos/
-            return self._no_recibido(ruta, exc)
-        destino = self._mover(ruta, self.configuracion.recibidos)
-        log.info(
-            "Factura recibida: %s → transacción %s (%s).",
-            ruta.name,
-            id_transaccion,
-            self._ahora().isoformat(timespec="seconds"),
-        )
-        return Recepcion(ruta.name, True, destino, id_transaccion)
+        """
+        Recibe un archivo. Ante una causa temporal reintenta con espera incremental; agotados los
+        reintentos, o ante cualquier otra falla, lo mueve a no_recibidos/ con su motivo.
+        """
+        intento = 1
+        while True:
+            try:
+                id_transaccion = self._intentar(ruta)
+            except FileNotFoundError:
+                log.warning("El archivo %s desapareció del directorio de entrada antes de procesarse.", ruta.name)
+                return Recepcion(ruta.name, False, None, motivo="El archivo desapareció antes de procesarse.")
+            except ERRORES_TEMPORALES as exc:
+                if intento > self.configuracion.reintentos:
+                    agotados = type(exc)(f"{exc} Se agotaron los {self.configuracion.reintentos} reintentos.")
+                    return self._no_recibido(ruta, agotados, intento)
+                espera = self.configuracion.espera_antes_del_reintento(intento)
+                log.warning(
+                    "No se pudo recibir %s (intento %d de %d): %s Se reintenta en %g s.",
+                    ruta.name,
+                    intento,
+                    self.configuracion.reintentos + 1,
+                    exc,
+                    espera,
+                )
+                self._dormir(espera)
+                intento += 1
+                continue
+            except Exception as exc:  # cualquier otro fallo es definitivo: el archivo va a no_recibidos/
+                return self._no_recibido(ruta, exc, intento)
+            destino = self._mover(ruta, self.configuracion.recibidos)
+            log.info(
+                "Factura recibida: %s → transacción %s (%s).",
+                ruta.name,
+                id_transaccion,
+                self._ahora().isoformat(timespec="seconds"),
+            )
+            return Recepcion(ruta.name, True, destino, id_transaccion, intentos=intento)
+
+    def _intentar(self, ruta: Path) -> uuid.UUID:
+        tipo = tipo_por_nombre(ruta.name)
+        if tipo is None:
+            raise ValueError(f"Solo se reciben archivos .xml o .pdf: {ruta.name}")
+        contenido = self._leer_cuando_termine_la_escritura(ruta)
+        validar_documento(contenido, tipo, self.configuracion.tamano_maximo)
+        return self._procesar(contenido, ruta.name, tipo)
 
     def _leer_cuando_termine_la_escritura(self, ruta: Path) -> bytes:
         """RF01 paso 3: no se lee hasta que el archivo deja de cambiar."""
