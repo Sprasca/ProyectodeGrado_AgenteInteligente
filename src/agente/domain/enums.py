@@ -61,6 +61,16 @@ class TipoEvento(StrEnum):
     APROBADA = "APROBADA"
     CORREGIDA = "CORREGIDA"
     RECHAZADA = "RECHAZADA"
+    CONSOLIDADA = "CONSOLIDADA"  # incluida en un reporte diario (RF06)
+    LIBERADA = "LIBERADA"  # su reporte se anuló: vuelve a poder corregirse y consolidarse
+
+
+class EstadoReporte(StrEnum):
+    """Estados del reporte de transacciones diarias (RF06, RF07). ANULADO es una ampliación del manual."""
+
+    CONSOLIDADO = "CONSOLIDADO"
+    EXPORTADO = "EXPORTADO"  # final: nunca se anula ni se exporta otra vez
+    ANULADO = "ANULADO"  # final: sus transacciones quedan libres
 
 
 class TipoDocumento(StrEnum):

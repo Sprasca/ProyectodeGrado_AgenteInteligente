@@ -95,6 +95,10 @@ class TransaccionModel(Base):
     corregido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # CUFE de la DIAN (cbc:UUID). Único: la misma factura no se registra dos veces.
     cufe: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Reporte diario vigente (RF06): uno como máximo. Se libera (NULL) si el reporte se anula.
+    reporte_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("reporte_diario.id", name="fk_transaccion_reporte"), nullable=True, index=True
+    )
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
@@ -132,7 +136,7 @@ class EventoTransaccionModel(Base):
     __tablename__ = "evento_transaccion"
     __table_args__ = (
         CheckConstraint(
-            "tipo IN ('RECIBIDA', 'CLASIFICADA', 'APROBADA', 'CORREGIDA', 'RECHAZADA')",
+            "tipo IN ('RECIBIDA', 'CLASIFICADA', 'APROBADA', 'CORREGIDA', 'RECHAZADA', 'CONSOLIDADA', 'LIBERADA')",
             name="ck_evento_transaccion_tipo",
         ),
     )
@@ -168,3 +172,70 @@ class DocumentoModel(Base):
     contenido: Mapped[bytes] = mapped_column(LargeBinary)
     sha256: Mapped[str] = mapped_column(String(64))
     recibido_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReporteDiarioModel(Base):
+    """Reporte de transacciones diarias (RF06) y, cuando se exporta, el XML generado (RF07)."""
+
+    __tablename__ = "reporte_diario"
+    __table_args__ = (
+        CheckConstraint("estado IN ('CONSOLIDADO', 'EXPORTADO', 'ANULADO')", name="ck_reporte_diario_estado"),
+        # Solo un reporte EXPORTADO tiene archivo, y todo reporte EXPORTADO lo tiene.
+        CheckConstraint(
+            "(estado = 'EXPORTADO') = (archivo_xml IS NOT NULL AND archivo_sha256 IS NOT NULL)",
+            name="ck_reporte_diario_exportado_con_archivo",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    fecha_jornada: Mapped[date] = mapped_column(Date, index=True)
+    corte: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    estado: Mapped[str] = mapped_column(String(12))
+    numero_transacciones: Mapped[int]
+    total_debito: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    total_credito: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    valor_total: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    # Totales por código registrado y subtotales por cuenta de 4 dígitos (se conservan si se anula).
+    movimientos: Mapped[list[dict]] = mapped_column(JSON)
+    subtotales: Mapped[list[dict]] = mapped_column(JSON)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    archivo_xml: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    archivo_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exportado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exportado_por: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", name="fk_reporte_diario_exportado_por"), nullable=True
+    )
+
+
+class ReporteTransaccionModel(Base):
+    """Qué transacciones se consolidaron en cada reporte. Histórica: se conserva aunque el reporte se anule."""
+
+    __tablename__ = "reporte_transaccion"
+
+    reporte_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reporte_diario.id", name="fk_reporte_transaccion_reporte"), primary_key=True
+    )
+    transaccion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("transaccion.id", name="fk_reporte_transaccion_transaccion"), primary_key=True, index=True
+    )
+
+
+class EventoReporteModel(Base):
+    """Cada cambio de estado de un reporte: quién (NULL si fue el cierre programado), cuándo y por qué."""
+
+    __tablename__ = "evento_reporte"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('CONSOLIDADO', 'EXPORTADO', 'ANULADO')", name="ck_evento_reporte_tipo"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reporte_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reporte_diario.id", name="fk_evento_reporte_reporte"), index=True
+    )
+    tipo: Mapped[str] = mapped_column(String(12))
+    usuario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", name="fk_evento_reporte_usuario"), nullable=True
+    )
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    despues: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -8,78 +8,46 @@ de DATABASE_URL no se toca.
 import hashlib
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, func, inspect, select, text
-from sqlalchemy.engine import make_url
+from alembic_pruebas import configuracion_alembic
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
-
-from agente.config import get_settings
-from agente.infrastructure.db.models import DocumentoModel, TransaccionModel
 
 pytestmark = pytest.mark.integracion
 
-RAIZ = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture
-def base_temporal(fabrica_bd, monkeypatch):
-    """Una base vacía en el mismo servidor; DATABASE_URL apunta a ella durante la prueba."""
-    url = make_url(get_settings().database_url)
-    nombre = f"agente_prueba_migracion_{uuid.uuid4().hex[:10]}"
-    administracion = create_engine(url, isolation_level="AUTOCOMMIT")
-    with administracion.connect() as conexion:
-        conexion.execute(text(f'CREATE DATABASE "{nombre}"'))
-    temporal = url.set(database=nombre)
-    monkeypatch.setenv("DATABASE_URL", temporal.render_as_string(hide_password=False))
-    get_settings.cache_clear()
-    motor = create_engine(temporal)
-    try:
-        yield motor
-    finally:
-        motor.dispose()
-        get_settings.cache_clear()
-        with administracion.connect() as conexion:
-            conexion.execute(text(f'DROP DATABASE IF EXISTS "{nombre}" WITH (FORCE)'))
-        administracion.dispose()
-
 
 def _alembic() -> Config:
-    configuracion = Config(str(RAIZ / "alembic.ini"))
-    configuracion.set_main_option("script_location", str(RAIZ / "migrations"))
-    return configuracion
+    return configuracion_alembic()
 
 
 def _transaccion_con_documento(sesion: Session, numero: str, contenido: bytes) -> uuid.UUID:
-    t = TransaccionModel(
-        id=uuid.uuid4(),
-        numero_factura=numero,
-        fecha=date(2026, 11, 1),
-        nit_adquirente="900123456",
-        valor_total=Decimal("119000.00"),
-        estado="EN_ALERTA",
-        confianza=Decimal("0.500"),
-        reglas_aplicadas=[],
-        motivos_alerta=[],
-        detalle_lineas=[],
+    """Con SQL plano: los modelos ORM describen el esquema de head, no el de la revisión 0007."""
+    id_ = uuid.uuid4()
+    sesion.execute(
+        text(
+            "INSERT INTO transaccion (id, numero_factura, fecha, nit_adquirente, valor_total, estado, confianza, "
+            "reglas_aplicadas, motivos_alerta, detalle_lineas) VALUES (:id, :numero, :fecha, '900123456', "
+            "119000.00, 'EN_ALERTA', 0.500, '{}', '[]', '[]')"
+        ),
+        {"id": id_, "numero": numero, "fecha": date(2026, 11, 1)},
     )
-    sesion.add(t)
-    sesion.flush()
-    sesion.add(
-        DocumentoModel(
-            transaccion_id=t.id,
-            nombre_archivo=f"{numero}.xml",
-            tipo="XML",
-            contenido=contenido,
-            sha256=hashlib.sha256(contenido).hexdigest(),
-            recibido_en=datetime.now(UTC),
-        )
+    sesion.execute(
+        text(
+            "INSERT INTO documento (transaccion_id, nombre_archivo, tipo, contenido, sha256, recibido_en) "
+            "VALUES (:id, :nombre, 'XML', :contenido, :sha256, :recibido)"
+        ),
+        {
+            "id": id_,
+            "nombre": f"{numero}.xml",
+            "contenido": contenido,
+            "sha256": hashlib.sha256(contenido).hexdigest(),
+            "recibido": datetime.now(UTC),
+        },
     )
-    return t.id
+    return id_
 
 
 def _restricciones_unicas(motor) -> set[str]:
@@ -106,13 +74,13 @@ def test_con_documentos_repetidos_la_migracion_se_detiene_y_los_lista_sin_borrar
 
     # No se borró nada, la restricción no existe y la base sigue en 0007.
     with Session(base_temporal) as sesion:
-        assert sesion.scalar(select(func.count()).select_from(DocumentoModel)) == 3
+        assert sesion.scalar(text("SELECT count(*) FROM documento")) == 3
         assert sesion.scalar(text("SELECT version_num FROM alembic_version")) == "0007"
     assert "uq_documento_sha256" not in _restricciones_unicas(base_temporal)
 
     # Resuelto el repetido (decisión humana), la migración se aplica.
     with Session(base_temporal) as sesion, sesion.begin():
-        sesion.execute(DocumentoModel.__table__.delete().where(DocumentoModel.transaccion_id == segunda))
+        sesion.execute(text("DELETE FROM documento WHERE transaccion_id = :id"), {"id": segunda})
     command.upgrade(alembic, "head")
     assert "uq_documento_sha256" in _restricciones_unicas(base_temporal)
 

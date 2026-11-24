@@ -120,3 +120,30 @@ def como_bd(usuarios_bd):
     from agente.api.autenticacion import crear_token
 
     return lambda rol: {"Authorization": f"Bearer {crear_token(usuarios_bd[rol])}"}
+
+
+@pytest.fixture
+def base_temporal(fabrica_bd, monkeypatch):
+    """
+    Una base vacía en el mismo servidor; DATABASE_URL apunta a ella durante la prueba y se elimina al final.
+    La base de DATABASE_URL (con los datos de quien ejecuta las pruebas) no se toca.
+    """
+    from sqlalchemy import create_engine
+
+    url = make_url(get_settings().database_url)
+    nombre = f"agente_prueba_{uuid.uuid4().hex[:12]}"
+    administracion = create_engine(url, isolation_level="AUTOCOMMIT")
+    with administracion.connect() as conexion:
+        conexion.execute(text(f'CREATE DATABASE "{nombre}"'))
+    temporal = url.set(database=nombre)
+    monkeypatch.setenv("DATABASE_URL", temporal.render_as_string(hide_password=False))
+    get_settings.cache_clear()
+    motor = create_engine(temporal)
+    try:
+        yield motor
+    finally:
+        motor.dispose()
+        get_settings.cache_clear()
+        with administracion.connect() as conexion:
+            conexion.execute(text(f'DROP DATABASE IF EXISTS "{nombre}" WITH (FORCE)'))
+        administracion.dispose()
