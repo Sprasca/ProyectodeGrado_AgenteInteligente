@@ -20,6 +20,7 @@ from agente.domain.enums import EstadoReporte, EstadoTransaccion, Naturaleza, Ti
 from agente.domain.errors import (
     ConsolidacionBloqueadaError,
     ExportacionFallidaError,
+    MotivoInvalidoError,
     ReporteNoEncontradoError,
     SinTransaccionesError,
     TransicionInvalidaError,
@@ -244,6 +245,81 @@ class ContratoReportes:
         reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<x/>")
         with pytest.raises(TransicionInvalidaError, match="un reporte EXPORTADO no se puede anular"):
             transacciones.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
+
+    # --- anulación (ampliación del manual) ----------------------------------------------------------------
+
+    def test_anular_libera_las_transacciones_y_conserva_la_lista_y_los_totales(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        ids = [_aprobada(transacciones, catalogo, nuevo_numero()) for _ in range(2)]
+        reporte = reportes.consolidar(corte=_corte(transacciones, *ids), fecha_jornada=JORNADA)
+
+        motivo = "Se consolidó antes de corregir una factura"
+        anulado = reportes.anular(reporte.id, motivo=motivo, usuario_id=id_usuario)
+
+        assert anulado.estado is EstadoReporte.ANULADO
+        assert anulado.transacciones == reporte.transacciones  # vínculo histórico
+        assert (anulado.movimientos, anulado.subtotales, anulado.total_debito, anulado.numero_transacciones) == (
+            reporte.movimientos,
+            reporte.subtotales,
+            reporte.total_debito,
+            reporte.numero_transacciones,
+        )
+        assert reportes.obtener(reporte.id) == anulado
+        evento = reportes.eventos(reporte.id)[-1]
+        assert (evento.tipo, evento.usuario_id, evento.motivo) == (EstadoReporte.ANULADO, id_usuario, motivo)
+        for id_ in ids:
+            assert transacciones.obtener(id_).reporte_id is None
+            liberada = transacciones.eventos(id_)[-1]
+            assert (liberada.tipo, liberada.usuario_id) == (TipoEvento.LIBERADA, id_usuario)
+            assert liberada.despues["reporte_id"] == str(reporte.id)
+
+    def test_tras_anular_se_corrige_y_se_consolida_en_otro_reporte(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        primero = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        reportes.anular(primero.id, motivo=MOTIVO, usuario_id=id_usuario)
+
+        corregida = transacciones.corregir(id_, partidas_correctas(catalogo), motivo=MOTIVO, usuario_id=id_usuario)
+        assert corregida.estado is EstadoTransaccion.CORREGIDA_CONTADOR
+        segundo = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        assert segundo.transacciones == (id_,)
+        assert transacciones.obtener(id_).reporte_id == segundo.id
+        assert reportes.obtener(primero.id).transacciones == (id_,)  # el anulado la sigue listando
+
+    def test_un_reporte_exportado_nunca_se_anula(self, transacciones, reportes, catalogo, nuevo_numero, id_usuario):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        exportado = reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<x/>")
+        with pytest.raises(TransicionInvalidaError, match="EXPORTADO nunca se anula"):
+            reportes.anular(reporte.id, motivo=MOTIVO, usuario_id=id_usuario)
+        assert reportes.obtener(reporte.id) == exportado
+        assert transacciones.obtener(id_).reporte_id == reporte.id
+
+    def test_un_reporte_anulado_no_se_anula_ni_se_exporta(
+        self, transacciones, reportes, catalogo, nuevo_numero, id_usuario
+    ):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        reportes.anular(reporte.id, motivo=MOTIVO, usuario_id=id_usuario)
+        with pytest.raises(TransicionInvalidaError, match="Solo se anula un reporte CONSOLIDADO"):
+            reportes.anular(reporte.id, motivo=MOTIVO, usuario_id=id_usuario)
+        with pytest.raises(TransicionInvalidaError, match="Solo se exporta un reporte CONSOLIDADO"):
+            reportes.exportar(reporte.id, usuario_id=id_usuario, generar=lambda *_: b"<x/>")
+
+    @pytest.mark.parametrize("motivo", ["", "   ", "corto"])
+    def test_anular_exige_motivo(self, transacciones, reportes, catalogo, nuevo_numero, id_usuario, motivo):
+        id_ = _aprobada(transacciones, catalogo, nuevo_numero())
+        reporte = reportes.consolidar(corte=_corte(transacciones, id_), fecha_jornada=JORNADA)
+        with pytest.raises(MotivoInvalidoError):
+            reportes.anular(reporte.id, motivo=motivo, usuario_id=id_usuario)
+        assert reportes.obtener(reporte.id) == reporte
+        assert transacciones.obtener(id_).reporte_id == reporte.id
+
+    def test_anular_un_reporte_inexistente(self, reportes, id_usuario):
+        with pytest.raises(ReporteNoEncontradoError):
+            reportes.anular(uuid.uuid4(), motivo=MOTIVO, usuario_id=id_usuario)
 
     # --- consulta ------------------------------------------------------------------------------------
 

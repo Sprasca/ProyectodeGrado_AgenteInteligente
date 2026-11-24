@@ -211,3 +211,11 @@ def exigir_sin_alertas(estados: Iterable[EstadoTransaccion]) -> None:
             f"No se puede exportar: {len(no_aprobadas)} transacción(es) del reporte no están aprobadas "
             f"({', '.join(sorted({e.value for e in no_aprobadas}))})."
         )
+
+
+def validar_anulacion(estado: EstadoReporte) -> None:
+    """Ampliación del manual: solo un reporte CONSOLIDADO se anula; un EXPORTADO nunca."""
+    if estado is EstadoReporte.EXPORTADO:
+        raise TransicionInvalidaError("Un reporte EXPORTADO nunca se anula: el ERP ya recibió su archivo.")
+    if estado is not EstadoReporte.CONSOLIDADO:
+        raise TransicionInvalidaError(f"Solo se anula un reporte CONSOLIDADO; estado actual: {estado}.")

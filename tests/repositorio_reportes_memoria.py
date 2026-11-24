@@ -19,8 +19,10 @@ from agente.domain.reportes import (
     ReporteDiario,
     consolidar_movimientos,
     exigir_sin_alertas,
+    validar_anulacion,
     validar_exportacion,
 )
+from agente.domain.transacciones import exigir_motivo
 from agente.infrastructure.db.reportes import (
     GeneradorArchivo,
     datos_consolidado,
@@ -115,3 +117,16 @@ class RepositorioReportesMemoria:
     def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
         self._cargar(id_reporte)
         return self._archivos.get(id_reporte)
+
+    def anular(self, id_reporte: uuid.UUID, *, motivo: str, usuario_id: int | None) -> ReporteDiario:
+        motivo = exigir_motivo(motivo, "anular un reporte")
+        reporte = self._cargar(id_reporte)
+        validar_anulacion(reporte.estado)
+        liberada = {"reporte_id": str(id_reporte), "reporte_estado": EstadoReporte.ANULADO.value}
+        for t in list(self.transacciones._por_id.values()):
+            if t.reporte_id == id_reporte:
+                self.transacciones._por_id[t.id] = replace(t, reporte_id=None)
+                self.transacciones._registrar(t.id, TipoEvento.LIBERADA, usuario_id, motivo=motivo, despues=liberada)
+        self._reportes[id_reporte] = replace(reporte, estado=EstadoReporte.ANULADO)
+        self._registrar(id_reporte, EstadoReporte.ANULADO, usuario_id, motivo=motivo)
+        return self._reportes[id_reporte]

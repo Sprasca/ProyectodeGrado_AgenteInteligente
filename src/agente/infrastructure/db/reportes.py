@@ -31,8 +31,10 @@ from ...domain.reportes import (
     nombre_archivo_reporte,
     subtotales_a_json,
     subtotales_desde_json,
+    validar_anulacion,
     validar_exportacion,
 )
+from ...domain.transacciones import exigir_motivo
 from .models import EventoReporteModel, ReporteDiarioModel, ReporteTransaccionModel, TransaccionModel
 from .transacciones import TransaccionRegistrada, a_registro, nuevo_evento, transaccion_bd
 
@@ -74,6 +76,15 @@ class RepositorioReportes(Protocol):
 
     def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
         """El XML exportado, o None si el reporte no se ha exportado. ReporteNoEncontradoError si no existe."""
+        ...
+
+    def anular(self, id_reporte: uuid.UUID, *, motivo: str, usuario_id: int | None) -> ReporteDiario:
+        """
+        Ampliación del manual: CONSOLIDADO → ANULADO, con motivo obligatorio (MotivoInvalidoError) y evento
+        ANULADO. Sus transacciones quedan libres (reporte_id NULL, evento LIBERADA) para corregirse y
+        consolidarse de nuevo; el reporte conserva su lista de transacciones y sus totales.
+        TransicionInvalidaError si no está CONSOLIDADO (un EXPORTADO nunca se anula).
+        """
         ...
 
 
@@ -292,3 +303,22 @@ class RepositorioReportesSQL:
                 return None
             reporte = _a_reporte(fila, [])
             return ArchivoExportado(nombre_archivo_reporte(reporte), fila.archivo_xml, fila.archivo_sha256)
+
+    def anular(self, id_reporte: uuid.UUID, *, motivo: str, usuario_id: int | None) -> ReporteDiario:
+        motivo = exigir_motivo(motivo, "anular un reporte")
+        with transaccion_bd(self._fabrica) as sesion:
+            fila = sesion.get(ReporteDiarioModel, id_reporte, with_for_update=True)
+            if fila is None:
+                raise ReporteNoEncontradoError(f"No existe el reporte {id_reporte}.")
+            validar_anulacion(EstadoReporte(fila.estado))
+            vigentes = sesion.scalars(
+                select(TransaccionModel).where(TransaccionModel.reporte_id == id_reporte).with_for_update()
+            )
+            liberada = {"reporte_id": str(id_reporte), "reporte_estado": EstadoReporte.ANULADO.value}
+            for t in vigentes:
+                t.reporte_id = None
+                sesion.add(nuevo_evento(t.id, TipoEvento.LIBERADA, usuario_id, motivo=motivo, despues=liberada))
+            fila.estado = EstadoReporte.ANULADO.value
+            sesion.add(_evento_reporte(fila.id, EstadoReporte.ANULADO, usuario_id, motivo=motivo))
+            sesion.flush()
+            return _a_reporte(fila, self._transacciones_de(sesion, fila.id))
