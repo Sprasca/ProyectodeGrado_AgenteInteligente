@@ -11,9 +11,14 @@ from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
-from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento, TipoNotificacion
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.jornada import jornada_de
+from agente.domain.notificaciones import (
+    causa_transaccion_en_alerta,
+    clave_transaccion,
+    resolucion_transaccion,
+)
 from agente.domain.puc import CatalogoPUC
 from agente.domain.reportes import exigir_sin_reporte
 from agente.domain.resultado import ResultadoClasificacion
@@ -119,6 +124,8 @@ class RepositorioMemoria:
         recepcion = datos_recepcion(resultado, documento, canal)
         self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion)
         self._registrar(registro.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado))
+        if self.notificaciones is not None and registro.estado is EstadoTransaccion.EN_ALERTA:
+            self.notificaciones.notificar(causa_transaccion_en_alerta(registro))
         return registro.id
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None:
@@ -132,6 +139,14 @@ class RepositorioMemoria:
         if t is None:
             raise TransaccionNoEncontradaError(f"No existe la transacción {id_transaccion}.")
         return t
+
+    def _resolver_alerta(self, id_transaccion, accion, usuario_id) -> None:
+        if self.notificaciones is not None:
+            self.notificaciones.atender_causa(
+                TipoNotificacion.TRANSACCION_EN_ALERTA,
+                clave_transaccion(id_transaccion),
+                resolucion_transaccion(accion, usuario_id),
+            )
 
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
@@ -148,6 +163,7 @@ class RepositorioMemoria:
             antes={"estado": t.estado.value},
             despues={"estado": EstadoTransaccion.APROBADA_CONTADOR.value},
         )
+        self._resolver_alerta(t.id, "aprobó", usuario_id)
         return self._por_id[t.id]
 
     def corregir(
@@ -178,6 +194,7 @@ class RepositorioMemoria:
             antes=estado_y_partidas(t.estado, t.partidas),
             despues=estado_y_partidas(EstadoTransaccion.CORREGIDA_CONTADOR, asiento.partidas),
         )
+        self._resolver_alerta(t.id, "corrigió", usuario_id)
         return self._por_id[t.id]
 
     def rechazar(
@@ -196,6 +213,7 @@ class RepositorioMemoria:
             antes={"estado": t.estado.value},
             despues={"estado": EstadoTransaccion.RECHAZADA.value},
         )
+        self._resolver_alerta(t.id, "rechazó", usuario_id)
         return self._por_id[t.id]
 
     def eventos(self, id_transaccion: uuid.UUID) -> list[EventoTransaccion]:

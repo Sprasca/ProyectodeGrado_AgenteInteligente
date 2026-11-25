@@ -14,13 +14,24 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from decimal import Decimal
+from typing import Any, Protocol
 
 from .enums import ClaseNotificacion, EstadoEnvio, Rol, TipoNotificacion
 from .errors import TransicionInvalidaError
 
 C, T = ClaseNotificacion.CONTABLE, ClaseNotificacion.TECNICA
 CONTADOR, AUXILIAR, ADMIN = Rol.CONTADOR, Rol.AUXILIAR, Rol.ADMIN
+
+
+class TransaccionEnAlerta(Protocol):
+    id: uuid.UUID
+    numero_factura: str
+    nit_adquirente: str
+    valor_total: Decimal
+    motivos_alerta: tuple[str, ...]
+    detalle_lineas: tuple[dict[str, Any], ...]
+    fecha_jornada: date | None
 
 
 @dataclass(frozen=True)
@@ -128,6 +139,35 @@ def resolucion_cierre(id_reporte: uuid.UUID) -> str:
 
 
 # --- Causas -----------------------------------------------------------------------------------------------
+
+
+def causa_transaccion_en_alerta(transaccion: TransaccionEnAlerta) -> Causa:
+    """RF04 paso 2: número de la factura, descripción de la venta y motivo de la alerta."""
+    descripciones = [d["descripcion"] for d in transaccion.detalle_lineas if d.get("descripcion")]
+    motivos = list(transaccion.motivos_alerta) or ["Transacción en alerta."]
+    mensaje = (
+        f"La factura {transaccion.numero_factura} quedó en alerta. Motivo: {' '.join(motivos)} "
+        f"Venta: {'; '.join(descripciones) or '(sin descripción)'}."
+    )
+    datos = {
+        "numero_factura": transaccion.numero_factura,
+        "descripcion_venta": descripciones,
+        "motivos": motivos,
+        "valor_total": str(transaccion.valor_total),
+        "nit_adquirente": transaccion.nit_adquirente,
+    }
+    return Causa(
+        TipoNotificacion.TRANSACCION_EN_ALERTA,
+        clave_transaccion(transaccion.id),
+        mensaje,
+        datos,
+        transaccion_id=transaccion.id,
+        fecha_jornada=transaccion.fecha_jornada,
+    )
+
+
+def resolucion_transaccion(accion: str, usuario_id: int | None) -> str:
+    return f"La transacción se {accion} (usuario {usuario_id})."
 
 
 def causa_jornada_sin_cierre(jornada: date, mensaje: str, datos: dict[str, Any]) -> Causa:

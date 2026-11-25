@@ -5,12 +5,14 @@ Las heredan test_repositorio_notificaciones_memoria.py (unitarias) y test_reposi
 Cada módulo define los fixtures:
 - `notificaciones`: el repositorio;
 - `usuarios`: {"contador", "auxiliar", "admin", "admin_inactivo"} → id, ya creados.
+ContratoNotificacionesDeTransacciones pide además `transacciones` y `nuevo_numero`.
 """
 
 import pytest
+from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
 
 from agente.domain.enums import ClaseNotificacion, TipoNotificacion
-from agente.domain.errors import NotificacionNoEncontradaError, TransicionInvalidaError
+from agente.domain.errors import FacturaDuplicadaError, NotificacionNoEncontradaError, TransicionInvalidaError
 from agente.domain.notificaciones import Causa
 
 T = TipoNotificacion
@@ -152,3 +154,72 @@ class ContratoNotificaciones:
         self.n.registrar(causa(T.EXPORTACION_FALLIDA, "reporte:2"))
         assert self.n.atender_causa([T.EXPORTACION_FALLIDA, T.REPORTE_DISPONIBLE], "reporte:1", "Se exportó") == 1
         assert len(self.n.listar(self.u["admin"], no_atendidas=True)) == 1
+
+
+class ContratoNotificacionesDeTransacciones:
+    """
+    RF04 con el repositorio de transacciones real: guardar una transacción EN_ALERTA notifica en la misma
+    transacción de base de datos, y aprobarla, corregirla o rechazarla deja la notificación ATENDIDA.
+    Fixtures adicionales: `transacciones` (comparte el estado con `notificaciones`), `nuevo_numero`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ayudas(self, notificaciones, usuarios, transacciones, catalogo, nuevo_numero):
+        self.n, self.u, self.t = notificaciones, usuarios, transacciones
+        self.catalogo, self.numero = catalogo, nuevo_numero
+
+    def en_alerta(self, numero=None):
+        return self.t.guardar(resultado_alerta_con_asiento(self.catalogo, numero or self.numero()))
+
+    def test_una_transaccion_en_alerta_notifica_al_contador_y_al_auxiliar(self):
+        id_ = self.en_alerta()
+        guardada = self.t.obtener(id_)
+        (contador,) = self.n.listar(self.u["contador"])
+        (auxiliar,) = self.n.listar(self.u["auxiliar"])
+        assert contador.id == auxiliar.id
+        assert (contador.tipo, contador.transaccion_id, contador.fecha_jornada) == (
+            T.TRANSACCION_EN_ALERTA,
+            id_,
+            guardada.fecha_jornada,
+        )
+        assert (contador.informativa, auxiliar.informativa) == (False, True)
+        # RF04 paso 2: número de la factura, descripción de la venta y motivo de la alerta.
+        assert contador.datos["numero_factura"] == guardada.numero_factura
+        assert contador.datos["descripcion_venta"] == [d["descripcion"] for d in guardada.detalle_lineas]
+        assert contador.datos["motivos"] == list(guardada.motivos_alerta)
+        assert guardada.numero_factura in contador.mensaje and guardada.motivos_alerta[0] in contador.mensaje
+        assert self.n.listar(self.u["admin"]) == []
+
+    def test_una_transaccion_aprobada_automaticamente_no_notifica(self):
+        self.t.guardar(resultado_aprobado(self.catalogo, self.numero()))
+        assert self.n.listar(self.u["contador"]) == self.n.listar(self.u["auxiliar"]) == []
+
+    def test_una_factura_duplicada_no_deja_una_segunda_notificacion(self):
+        numero = self.numero()
+        self.en_alerta(numero)
+        with pytest.raises(FacturaDuplicadaError):
+            self.en_alerta(numero)
+        assert len(self.n.listar(self.u["contador"])) == 1
+
+    @pytest.mark.parametrize("accion", ["aprobar", "corregir", "rechazar"])
+    def test_resolver_la_transaccion_deja_la_notificacion_atendida_para_los_dos(self, accion):
+        id_ = self.en_alerta()
+        contador = self.u["contador"]
+        if accion == "aprobar":
+            self.t.aprobar(id_, usuario_id=contador)
+        elif accion == "corregir":
+            self.t.corregir(id_, partidas_correctas(self.catalogo), motivo="Corrección de prueba", usuario_id=contador)
+        else:
+            self.t.rechazar(id_, motivo="Rechazo de prueba del contrato", usuario_id=contador)
+        verbo = {"aprobar": "aprobó", "corregir": "corrigió", "rechazar": "rechazó"}[accion]
+        for usuario in ("contador", "auxiliar"):
+            (vista,) = self.n.listar(self.u[usuario])
+            assert vista.atendida_en is not None and vista.atendida_por is None
+            assert vista.resolucion == f"La transacción se {verbo} (usuario {contador})."
+        assert self.n.listar(self.u["contador"], no_atendidas=True) == []
+
+    def test_resolver_una_no_atiende_la_de_otra_transaccion(self):
+        primera, segunda = self.en_alerta(), self.en_alerta()
+        self.t.aprobar(primera, usuario_id=self.u["contador"])
+        (pendiente,) = self.n.listar(self.u["contador"], no_atendidas=True)
+        assert pendiente.transaccion_id == segunda

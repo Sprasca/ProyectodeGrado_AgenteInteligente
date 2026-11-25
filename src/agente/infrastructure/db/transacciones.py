@@ -15,9 +15,21 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
 from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
-from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from ...domain.enums import (
+    CanalRecepcion,
+    EstadoTransaccion,
+    Naturaleza,
+    TipoDocumento,
+    TipoEvento,
+    TipoNotificacion,
+)
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.jornada import jornada_de
+from ...domain.notificaciones import (
+    causa_transaccion_en_alerta,
+    clave_transaccion,
+    resolucion_transaccion,
+)
 from ...domain.puc import CatalogoPUC
 from ...domain.reportes import exigir_sin_reporte
 from ...domain.resultado import ResultadoClasificacion
@@ -33,6 +45,7 @@ from ...domain.transacciones import (
 from .conexion import RepositorioNoDisponibleError, transaccion_bd
 from .horario import horario_vigente
 from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
+from .notificaciones import atender_en_sesion, notificar_en_sesion
 
 
 class CuentaNoSembradaError(Exception):
@@ -402,6 +415,9 @@ class RepositorioSQL:
                 sesion.add(nuevo_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
                 sesion.add(nuevo_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()
+                if resultado.estado is EstadoTransaccion.EN_ALERTA:
+                    # RF04: en la misma transacción que la factura (o queda todo, o no queda nada).
+                    notificar_en_sesion(sesion, causa_transaccion_en_alerta(a_registro(t)))
                 return t.id
         except IntegrityError as exc:
             # Carrera entre dos guardados de la misma factura: la restricción UNIQUE decide.
@@ -455,6 +471,15 @@ class RepositorioSQL:
         with self._transaccion() as sesion:
             return [a_registro(t) for t in sesion.scalars(consulta)]
 
+    def _resolver_alerta(self, sesion: Session, t: TransaccionModel, accion: str, usuario_id: int | None) -> None:
+        """Al aprobar, corregir o rechazar, su notificación de alerta queda ATENDIDA (misma transacción)."""
+        atender_en_sesion(
+            sesion,
+            TipoNotificacion.TRANSACCION_EN_ALERTA,
+            clave_transaccion(t.id),
+            resolucion_transaccion(accion, usuario_id),
+        )
+
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
     ) -> TransaccionRegistrada:
@@ -468,6 +493,7 @@ class RepositorioSQL:
             sesion.add(
                 nuevo_evento(t.id, TipoEvento.APROBADA, usuario_id, motivo=motivo, antes=antes, despues=despues)
             )
+            self._resolver_alerta(sesion, t, "aprobó", usuario_id)
             sesion.flush()
             return a_registro(t)
 
@@ -501,6 +527,7 @@ class RepositorioSQL:
                         despues=estado_y_partidas(EstadoTransaccion.CORREGIDA_CONTADOR, asiento.partidas),
                     )
                 )
+                self._resolver_alerta(sesion, t, "corrigió", usuario_id)
                 sesion.flush()
                 return a_registro(t)
         except IntegrityError as exc:
@@ -522,6 +549,7 @@ class RepositorioSQL:
                     t.id, TipoEvento.RECHAZADA, usuario_id, motivo=motivo, antes=antes, despues={"estado": t.estado}
                 )
             )
+            self._resolver_alerta(sesion, t, "rechazó", usuario_id)
             sesion.flush()
             return a_registro(t)
 

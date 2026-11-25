@@ -1,7 +1,10 @@
 """Contrato de RepositorioNotificaciones sobre la implementación en memoria."""
 
+import itertools
+
 import pytest
-from contrato_notificaciones import ContratoNotificaciones
+from contrato_notificaciones import ContratoNotificaciones, ContratoNotificacionesDeTransacciones
+from repositorio_memoria import RepositorioMemoria
 from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 
 from agente.domain.enums import Rol
@@ -26,4 +29,19 @@ def usuarios():
 
 
 class TestRepositorioNotificacionesMemoria(ContratoNotificaciones):
+    pass
+
+
+@pytest.fixture
+def transacciones(catalogo, notificaciones):
+    return RepositorioMemoria(catalogo, notificaciones=notificaciones)
+
+
+@pytest.fixture
+def nuevo_numero():
+    contador = itertools.count(1)
+    return lambda: f"FV-NOT-{next(contador)}"
+
+
+class TestNotificacionesDeTransaccionesMemoria(ContratoNotificacionesDeTransacciones):
     pass

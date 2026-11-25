@@ -5,6 +5,7 @@ Los 401 (sin token) y 403 (rol sin permiso) de cada ruta están en test_autentic
 
 import pytest
 from autenticacion_pruebas import USUARIOS, encabezados
+from fabricas import resultado_alerta_con_asiento
 
 from agente.domain.enums import Rol, TipoNotificacion
 from agente.domain.notificaciones import Causa
@@ -96,3 +97,26 @@ def test_las_que_se_resuelven_solas_responden_409_al_atenderlas_a_mano(entorno_a
 
 def test_id_no_numerico_responde_422(entorno_api):
     assert entorno_api.cliente.post("/notificaciones/abc/leer", headers=encabezados(ADM)).status_code == 422
+
+
+# --- Transacción en alerta (RF04 y RN05) -------------------------------------------------------------------
+
+
+def test_factura_en_alerta_el_auxiliar_la_ve_no_la_aprueba_y_al_resolverla_queda_atendida(entorno_api, catalogo):
+    id_ = entorno_api.transacciones.guardar(resultado_alerta_con_asiento(catalogo, "FV-ALERTA-1"))
+    (contador,) = _listar(entorno_api, C)
+    (auxiliar,) = _listar(entorno_api, A)
+    assert contador["id"] == auxiliar["id"] and contador["transaccion_id"] == str(id_)
+    assert (contador["informativa"], auxiliar["informativa"]) == (False, True)
+    assert contador["datos"]["numero_factura"] == "FV-ALERTA-1"
+
+    assert entorno_api.cliente.post(f"/transacciones/{id_}/aprobar", headers=encabezados(A)).status_code == 403
+    r = entorno_api.cliente.post(f"/notificaciones/{auxiliar['id']}/atender", headers=encabezados(A))
+    assert r.status_code == 409
+    r = entorno_api.cliente.post(f"/notificaciones/{contador['id']}/atender", headers=encabezados(C))
+    assert r.status_code == 409 and "no se atiende a mano" in r.json()["detail"]
+
+    assert entorno_api.cliente.post(f"/transacciones/{id_}/aprobar", headers=encabezados(C)).status_code == 200
+    for rol in (C, A):
+        (vista,) = _listar(entorno_api, rol)
+        assert vista["atendida_en"] and "La transacción se aprobó" in vista["resolucion"]

@@ -1,12 +1,15 @@
 """Contrato de RepositorioNotificaciones contra PostgreSQL, sobre una base temporal (ver bd_sembrada)."""
 
+import itertools
+
 import pytest
 from autenticacion_pruebas import CONTRASENA
-from contrato_notificaciones import ContratoNotificaciones
+from contrato_notificaciones import ContratoNotificaciones, ContratoNotificacionesDeTransacciones
 from sqlalchemy import text
 
 from agente.domain.enums import Rol
 from agente.infrastructure.db.notificaciones import RepositorioNotificacionesSQL
+from agente.infrastructure.db.transacciones import RepositorioSQL
 from agente.infrastructure.db.usuarios import RepositorioUsuariosSQL
 
 pytestmark = pytest.mark.integracion
@@ -32,4 +35,19 @@ def usuarios(bd_sembrada):
 
 
 class TestRepositorioNotificacionesSQL(ContratoNotificaciones):
+    pass
+
+
+@pytest.fixture
+def transacciones(bd_sembrada, catalogo):
+    return RepositorioSQL(bd_sembrada, catalogo)
+
+
+@pytest.fixture
+def nuevo_numero():
+    contador = itertools.count(1)
+    return lambda: f"FV-NOT-{next(contador)}"
+
+
+class TestNotificacionesDeTransaccionesSQL(ContratoNotificacionesDeTransacciones):
     pass
