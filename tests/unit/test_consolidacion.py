@@ -9,11 +9,12 @@ from decimal import Decimal
 import pytest
 from fabricas import resultado_alerta_con_asiento, resultado_aprobado
 from repositorio_memoria import RepositorioMemoria
+from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 from repositorio_reportes_memoria import RepositorioReportesMemoria
 
 from agente.application.reportes import consolidar_reporte, estado_jornada
 from agente.domain.asiento import Partida
-from agente.domain.enums import Naturaleza, TipoReporte
+from agente.domain.enums import Naturaleza, Rol, TipoNotificacion, TipoReporte
 from agente.domain.errors import (
     ConsolidacionBloqueadaError,
     ConsolidacionInconsistenteError,
@@ -23,6 +24,8 @@ from agente.domain.errors import (
 )
 from agente.domain.jornada import HORARIO_INICIAL
 from agente.domain.reportes import MovimientoConsolidado, SubtotalCuenta, consolidar_movimientos
+from agente.domain.usuarios import Usuario
+from agente.infrastructure.db.transacciones import RepositorioNoDisponibleError
 
 D, C = Naturaleza.DEBITO, Naturaleza.CREDITO
 
@@ -240,3 +243,34 @@ def test_estado_tras_el_cierre(repos, catalogo):
         1,
     )
     assert not estado.puede_consolidar and "ya tiene reporte de cierre" in estado.motivos[0]
+
+
+def test_un_descuadre_notifica_al_admin_y_se_atiende_a_mano(repos, catalogo, monkeypatch):
+    import repositorio_reportes_memoria
+
+    admin = Usuario(3, "admin", "Admin", Rol.ADMIN)
+    notificaciones = RepositorioNotificacionesMemoria(lambda: [admin])
+    _recibir(repos, catalogo, "FV-1", A_LAS_10)
+
+    def descuadrado(_):
+        raise ConsolidacionInconsistenteError("Los débitos (1) no igualan a los créditos (2) del consolidado.")
+
+    monkeypatch.setattr(repositorio_reportes_memoria, "consolidar_movimientos", descuadrado)
+    with pytest.raises(ConsolidacionInconsistenteError):
+        _consolidar(repos, notificaciones=notificaciones)
+    (notificacion,) = notificaciones.listar(admin.id)
+    assert (notificacion.tipo, notificacion.fecha_jornada) == (TipoNotificacion.DESCUADRE, HOY)
+    assert "Los débitos (1) no igualan" in notificacion.mensaje and notificacion.se_atiende_a_mano
+    assert notificaciones.atender(admin.id, notificacion.id).atendida_por == admin.id
+
+
+def test_si_no_se_puede_registrar_la_notificacion_el_error_original_sigue(repos, catalogo, caplog):
+    class SinBase:
+        def registrar(self, causa):
+            raise RepositorioNoDisponibleError("sin conexión")
+
+    _recibir(repos, catalogo, "FV-ALERTA", A_LAS_10, alerta=True)
+    with caplog.at_level(logging.ERROR, logger="agente.reportes"), pytest.raises(ConsolidacionBloqueadaError):
+        _consolidar(repos, notificaciones=SinBase())
+    assert "no se pudo registrar la notificación CONSOLIDACION_BLOQUEADA" in caplog.text
+

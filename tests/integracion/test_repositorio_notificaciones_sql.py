@@ -4,11 +4,16 @@ import itertools
 
 import pytest
 from autenticacion_pruebas import CONTRASENA
-from contrato_notificaciones import ContratoNotificaciones, ContratoNotificacionesDeTransacciones
+from contrato_notificaciones import (
+    ContratoNotificaciones,
+    ContratoNotificacionesDeReportes,
+    ContratoNotificacionesDeTransacciones,
+)
 from sqlalchemy import text
 
 from agente.domain.enums import Rol
 from agente.infrastructure.db.notificaciones import RepositorioNotificacionesSQL
+from agente.infrastructure.db.reportes import RepositorioReportesSQL
 from agente.infrastructure.db.transacciones import RepositorioSQL
 from agente.infrastructure.db.usuarios import RepositorioUsuariosSQL
 
@@ -50,4 +55,13 @@ def nuevo_numero():
 
 
 class TestNotificacionesDeTransaccionesSQL(ContratoNotificacionesDeTransacciones):
+    pass
+
+
+@pytest.fixture
+def reportes(bd_sembrada):
+    return RepositorioReportesSQL(bd_sembrada)
+
+
+class TestNotificacionesDeReportesSQL(ContratoNotificacionesDeReportes):
     pass

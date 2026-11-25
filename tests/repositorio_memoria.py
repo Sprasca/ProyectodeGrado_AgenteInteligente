@@ -16,7 +16,9 @@ from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.jornada import jornada_de
 from agente.domain.notificaciones import (
     causa_transaccion_en_alerta,
+    clave_jornada,
     clave_transaccion,
+    resolucion_jornada_sin_alertas,
     resolucion_transaccion,
 )
 from agente.domain.puc import CatalogoPUC
@@ -141,11 +143,18 @@ class RepositorioMemoria:
         return t
 
     def _resolver_alerta(self, id_transaccion, accion, usuario_id) -> None:
-        if self.notificaciones is not None:
+        if self.notificaciones is None:
+            return
+        self.notificaciones.atender_causa(
+            TipoNotificacion.TRANSACCION_EN_ALERTA,
+            clave_transaccion(id_transaccion),
+            resolucion_transaccion(accion, usuario_id),
+        )
+        jornada = self._por_id[id_transaccion].fecha_jornada
+        alertas = [t for t in self._por_id.values() if t.estado is EstadoTransaccion.EN_ALERTA]
+        if not any(t.fecha_jornada == jornada for t in alertas):
             self.notificaciones.atender_causa(
-                TipoNotificacion.TRANSACCION_EN_ALERTA,
-                clave_transaccion(id_transaccion),
-                resolucion_transaccion(accion, usuario_id),
+                TipoNotificacion.CONSOLIDACION_BLOQUEADA, clave_jornada(jornada), resolucion_jornada_sin_alertas()
             )
 
     def aprobar(

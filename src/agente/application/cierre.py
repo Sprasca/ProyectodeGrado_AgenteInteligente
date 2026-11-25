@@ -91,7 +91,13 @@ class CierreProgramado:
         )
         try:
             consolidar_reporte(
-                self.reportes, horario, usuario_id=None, tipo=TipoReporte.CIERRE, fecha_jornada=jornada, ahora=ahora
+                self.reportes,
+                horario,
+                usuario_id=None,
+                tipo=TipoReporte.CIERRE,
+                fecha_jornada=jornada,
+                ahora=ahora,
+                notificaciones=self.notificaciones,
             )
         except JornadaCerradaError:
             return

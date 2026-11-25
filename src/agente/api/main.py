@@ -516,6 +516,7 @@ def consolidar(
     usuario: UsuarioAutorizado,
     reportes: RepoReportes,
     horarios: RepoHorario,
+    notificaciones: RepoNotificaciones,
     solicitud: Annotated[SolicitudConsolidacion | None, Body()] = None,
 ):
     """
@@ -532,6 +533,7 @@ def consolidar(
         usuario_id=usuario.id,
         tipo=solicitud.tipo,
         fecha_jornada=solicitud.fecha_jornada,
+        notificaciones=notificaciones,
     )
     return jsonable_encoder(reporte)
 
@@ -589,12 +591,15 @@ def eventos_reporte(id_reporte: uuid.UUID, reportes: RepoReportes):
 
 
 @app.post("/reportes/{id_reporte}/exportar")
-def exportar(id_reporte: uuid.UUID, usuario: UsuarioAutorizado, reportes: RepoReportes):
+def exportar(
+    id_reporte: uuid.UUID, usuario: UsuarioAutorizado, reportes: RepoReportes, notificaciones: RepoNotificaciones
+):
     """
     El contador autoriza y en el mismo paso se genera el XML: CONSOLIDADO → EXPORTADO.
     Ya exportado, anulado o con transacciones no aprobadas → 409. Falla la generación → 500 y sigue CONSOLIDADO.
     """
-    return jsonable_encoder(exportar_reporte(reportes, id_reporte, usuario_id=usuario.id))
+    exportado = exportar_reporte(reportes, id_reporte, usuario_id=usuario.id, notificaciones=notificaciones)
+    return jsonable_encoder(exportado)
 
 
 @app.get("/reportes/{id_reporte}/xml", dependencies=[Autorizado])

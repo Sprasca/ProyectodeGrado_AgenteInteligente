@@ -5,7 +5,7 @@ Los 401 (sin token) y 403 (rol sin permiso) de cada ruta están en test_autentic
 
 import pytest
 from autenticacion_pruebas import USUARIOS, encabezados
-from fabricas import resultado_alerta_con_asiento
+from fabricas import resultado_alerta_con_asiento, resultado_aprobado
 
 from agente.domain.enums import Rol, TipoNotificacion
 from agente.domain.notificaciones import Causa
@@ -120,3 +120,42 @@ def test_factura_en_alerta_el_auxiliar_la_ve_no_la_aprueba_y_al_resolverla_queda
     for rol in (C, A):
         (vista,) = _listar(entorno_api, rol)
         assert vista["atendida_en"] and "La transacción se aprobó" in vista["resolucion"]
+
+
+# --- Reportes (RF06 y RF07) por la API ------------------------------------------------------------------------
+
+
+def _tipos(api, rol):
+    return [n["tipo"] for n in _listar(api, rol)]
+
+
+def test_consolidar_con_alertas_notifica_el_bloqueo_al_contador(entorno_api, catalogo):
+    entorno_api.transacciones.guardar(resultado_alerta_con_asiento(catalogo, "FV-ALERTA-2"))
+    assert entorno_api.cliente.post("/reportes/consolidar", headers=encabezados(A)).status_code == 409
+    assert "CONSOLIDACION_BLOQUEADA" in _tipos(entorno_api, C)
+    assert "CONSOLIDACION_BLOQUEADA" not in _tipos(entorno_api, A)
+
+
+def test_consolidar_notifica_el_reporte_disponible_y_exportarlo_lo_atiende(entorno_api, catalogo):
+    entorno_api.transacciones.guardar(resultado_aprobado(catalogo, "FV-OK-1"))
+    reporte = entorno_api.cliente.post("/reportes/consolidar", headers=encabezados(A)).json()
+    for rol in (C, A):
+        (disponible,) = _listar(entorno_api, rol)
+        assert (disponible["tipo"], disponible["reporte_id"]) == ("REPORTE_DISPONIBLE", reporte["id"])
+    assert entorno_api.cliente.post(f"/reportes/{reporte['id']}/exportar", headers=encabezados(C)).status_code == 200
+    assert _listar(entorno_api, A, "?no_atendidas=true") == []
+
+
+def test_una_exportacion_fallida_notifica_al_admin(entorno_api, catalogo, monkeypatch):
+    from agente.infrastructure.erp import xml_reporte
+
+    def falla(*_):
+        raise OSError("sin espacio en disco")
+
+    monkeypatch.setattr(xml_reporte, "generar_xml_reporte", falla)
+    entorno_api.transacciones.guardar(resultado_aprobado(catalogo, "FV-OK-2"))
+    reporte = entorno_api.cliente.post("/reportes/consolidar", headers=encabezados(A)).json()
+    assert entorno_api.cliente.post(f"/reportes/{reporte['id']}/exportar", headers=encabezados(C)).status_code == 500
+    (fallida,) = _listar(entorno_api, ADM)
+    assert fallida["tipo"] == "EXPORTACION_FALLIDA" and "sin espacio en disco" in fallida["mensaje"]
+

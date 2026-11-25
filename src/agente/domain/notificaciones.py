@@ -34,6 +34,15 @@ class TransaccionEnAlerta(Protocol):
     fecha_jornada: date | None
 
 
+class ReporteNotificable(Protocol):
+    id: uuid.UUID
+    fecha_jornada: date
+    tipo: Any
+    numero: int
+    numero_transacciones: int
+    valor_total: Decimal
+
+
 @dataclass(frozen=True)
 class Especificacion:
     clase: ClaseNotificacion
@@ -168,6 +177,71 @@ def causa_transaccion_en_alerta(transaccion: TransaccionEnAlerta) -> Causa:
 
 def resolucion_transaccion(accion: str, usuario_id: int | None) -> str:
     return f"La transacción se {accion} (usuario {usuario_id})."
+
+
+def causa_consolidacion_bloqueada(jornada: date, pendientes: int, tipo_reporte: str) -> Causa:
+    """RF06 1.a: al contador, con el número de transacciones pendientes."""
+    mensaje = (
+        f"No se pudo consolidar el reporte {tipo_reporte} de la jornada {jornada}: hay {pendientes} "
+        "transacción(es) en alerta sin resolver. Resuélvalas (aprobar, corregir o rechazar)."
+    )
+    datos = {"pendientes": pendientes, "tipo_reporte": tipo_reporte}
+    clave = clave_jornada(jornada)
+    return Causa(TipoNotificacion.CONSOLIDACION_BLOQUEADA, clave, mensaje, datos, fecha_jornada=jornada)
+
+
+def causa_reporte_disponible(reporte: ReporteNotificable) -> Causa:
+    """RF06 paso 8: al auxiliar y al contador, el reporte está disponible para verificación."""
+    mensaje = (
+        f"El reporte {reporte.tipo} n.º {reporte.numero} de la jornada {reporte.fecha_jornada} está disponible "
+        f"para verificación: {reporte.numero_transacciones} transacción(es), valor total {reporte.valor_total}."
+    )
+    datos = {
+        "tipo_reporte": str(reporte.tipo),
+        "numero": reporte.numero,
+        "numero_transacciones": reporte.numero_transacciones,
+        "valor_total": str(reporte.valor_total),
+    }
+    return Causa(
+        TipoNotificacion.REPORTE_DISPONIBLE,
+        clave_reporte(reporte.id),
+        mensaje,
+        datos,
+        reporte_id=reporte.id,
+        fecha_jornada=reporte.fecha_jornada,
+    )
+
+
+def causa_descuadre(jornada: date, detalle: str) -> Causa:
+    """RF06 3.a: error de integridad, al responsable de mantenimiento."""
+    mensaje = f"ALERTA TÉCNICA: la consolidación de la jornada {jornada} se abortó por un error de integridad: "
+    mensaje += detalle
+    datos = {"detalle": detalle}
+    return Causa(TipoNotificacion.DESCUADRE, clave_jornada(jornada), mensaje, datos, fecha_jornada=jornada)
+
+
+def causa_exportacion_fallida(id_reporte: uuid.UUID, detalle: str) -> Causa:
+    """RF07 anomalía 4: el reporte sigue CONSOLIDADO; alerta técnica al responsable de mantenimiento."""
+    mensaje = f"ALERTA TÉCNICA: falló la exportación del reporte {id_reporte}: {detalle}"
+    return Causa(
+        TipoNotificacion.EXPORTACION_FALLIDA,
+        clave_reporte(id_reporte),
+        mensaje,
+        {"detalle": detalle},
+        reporte_id=id_reporte,
+    )
+
+
+def resolucion_reporte(estado: str, usuario_id: int | None) -> str:
+    return f"El reporte quedó {estado} (usuario {usuario_id})."
+
+
+def resolucion_jornada_sin_alertas() -> str:
+    return "Ya no quedan transacciones en alerta en la jornada."
+
+
+def resolucion_reporte_consolidado(id_reporte: uuid.UUID) -> str:
+    return f"Se consolidó el reporte {id_reporte} de la jornada."
 
 
 def causa_jornada_sin_cierre(jornada: date, mensaje: str, datos: dict[str, Any]) -> Causa:

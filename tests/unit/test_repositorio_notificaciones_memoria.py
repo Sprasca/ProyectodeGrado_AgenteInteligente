@@ -3,9 +3,14 @@
 import itertools
 
 import pytest
-from contrato_notificaciones import ContratoNotificaciones, ContratoNotificacionesDeTransacciones
+from contrato_notificaciones import (
+    ContratoNotificaciones,
+    ContratoNotificacionesDeReportes,
+    ContratoNotificacionesDeTransacciones,
+)
 from repositorio_memoria import RepositorioMemoria
 from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
+from repositorio_reportes_memoria import RepositorioReportesMemoria
 
 from agente.domain.enums import Rol
 from agente.domain.usuarios import Usuario
@@ -44,4 +49,13 @@ def nuevo_numero():
 
 
 class TestNotificacionesDeTransaccionesMemoria(ContratoNotificacionesDeTransacciones):
+    pass
+
+
+@pytest.fixture
+def reportes(transacciones):
+    return RepositorioReportesMemoria(transacciones)
+
+
+class TestNotificacionesDeReportesMemoria(ContratoNotificacionesDeReportes):
     pass

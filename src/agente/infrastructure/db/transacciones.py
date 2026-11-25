@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -27,7 +27,9 @@ from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.jornada import jornada_de
 from ...domain.notificaciones import (
     causa_transaccion_en_alerta,
+    clave_jornada,
     clave_transaccion,
+    resolucion_jornada_sin_alertas,
     resolucion_transaccion,
 )
 from ...domain.puc import CatalogoPUC
@@ -479,6 +481,22 @@ class RepositorioSQL:
             clave_transaccion(t.id),
             resolucion_transaccion(accion, usuario_id),
         )
+        sesion.flush()
+        quedan = sesion.scalar(
+            select(func.count())
+            .select_from(TransaccionModel)
+            .where(
+                TransaccionModel.fecha_jornada == t.fecha_jornada,
+                TransaccionModel.estado == EstadoTransaccion.EN_ALERTA.value,
+            )
+        )
+        if not quedan:
+            atender_en_sesion(
+                sesion,
+                TipoNotificacion.CONSOLIDACION_BLOQUEADA,
+                clave_jornada(t.fecha_jornada),
+                resolucion_jornada_sin_alertas(),
+            )
 
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None

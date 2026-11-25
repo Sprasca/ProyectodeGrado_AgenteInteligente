@@ -5,14 +5,25 @@ Las heredan test_repositorio_notificaciones_memoria.py (unitarias) y test_reposi
 Cada módulo define los fixtures:
 - `notificaciones`: el repositorio;
 - `usuarios`: {"contador", "auxiliar", "admin", "admin_inactivo"} → id, ya creados.
-ContratoNotificacionesDeTransacciones pide además `transacciones` y `nuevo_numero`.
+ContratoNotificacionesDeTransacciones pide además `transacciones` y `nuevo_numero`;
+ContratoNotificacionesDeReportes, además, `reportes`.
 """
+
+from datetime import UTC, datetime
 
 import pytest
 from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
 
-from agente.domain.enums import ClaseNotificacion, TipoNotificacion
-from agente.domain.errors import FacturaDuplicadaError, NotificacionNoEncontradaError, TransicionInvalidaError
+from agente.application.reportes import consolidar_reporte, exportar_reporte
+from agente.domain.enums import ClaseNotificacion, TipoNotificacion, TipoReporte
+from agente.domain.errors import (
+    ConsolidacionBloqueadaError,
+    ExportacionFallidaError,
+    FacturaDuplicadaError,
+    NotificacionNoEncontradaError,
+    TransicionInvalidaError,
+)
+from agente.domain.jornada import HORARIO_INICIAL
 from agente.domain.notificaciones import Causa
 
 T = TipoNotificacion
@@ -223,3 +234,110 @@ class ContratoNotificacionesDeTransacciones:
         self.t.aprobar(primera, usuario_id=self.u["contador"])
         (pendiente,) = self.n.listar(self.u["contador"], no_atendidas=True)
         assert pendiente.transaccion_id == segunda
+
+
+LEJANO = datetime(2099, 1, 1, tzinfo=UTC)  # todas las jornadas de las pruebas ya terminaron
+
+
+class ContratoNotificacionesDeReportes:
+    """
+    RF06 y RF07 con los repositorios reales: reporte disponible (contador y auxiliar), consolidación bloqueada
+    (contador) y exportación fallida (ADMIN), y su atención automática. Fixtures adicionales: `transacciones`,
+    `reportes` (comparten el estado con `notificaciones`) y `nuevo_numero`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ayudas(self, notificaciones, usuarios, transacciones, reportes, catalogo, nuevo_numero):
+        self.n, self.u, self.t, self.r = notificaciones, usuarios, transacciones, reportes
+        self.catalogo, self.numero = catalogo, nuevo_numero
+
+    def aprobada(self):
+        return self.t.guardar(resultado_aprobado(self.catalogo, self.numero()))
+
+    def en_alerta(self):
+        return self.t.guardar(resultado_alerta_con_asiento(self.catalogo, self.numero()))
+
+    def cerrar(self, jornada):
+        return consolidar_reporte(
+            self.r,
+            HORARIO_INICIAL,
+            usuario_id=self.u["auxiliar"],
+            tipo=TipoReporte.CIERRE,
+            fecha_jornada=jornada,
+            ahora=LEJANO,
+            notificaciones=self.n,
+        )
+
+    def de_tipo(self, usuario, tipo):
+        return [v for v in self.n.listar(self.u[usuario]) if v.tipo is tipo]
+
+    def test_reporte_disponible_para_el_contador_y_el_auxiliar(self):
+        jornada = self.t.obtener(self.aprobada()).fecha_jornada
+        reporte = self.cerrar(jornada)
+        (contador,) = self.de_tipo("contador", T.REPORTE_DISPONIBLE)
+        (auxiliar,) = self.de_tipo("auxiliar", T.REPORTE_DISPONIBLE)
+        assert contador.id == auxiliar.id and contador.reporte_id == reporte.id
+        assert (contador.informativa, auxiliar.informativa) == (False, False)
+        assert contador.datos == {
+            "tipo_reporte": "CIERRE",
+            "numero": 1,
+            "numero_transacciones": 1,
+            "valor_total": str(reporte.valor_total),
+        }
+        assert self.de_tipo("admin", T.REPORTE_DISPONIBLE) == []
+
+    @pytest.mark.parametrize("accion", ["exportar", "anular"])
+    def test_exportar_o_anular_atiende_el_reporte_disponible(self, accion):
+        jornada = self.t.obtener(self.aprobada()).fecha_jornada
+        reporte = self.cerrar(jornada)
+        contador = self.u["contador"]
+        if accion == "exportar":
+            self.r.exportar(reporte.id, usuario_id=contador, generar=lambda *_: b"<x/>")
+        else:
+            self.r.anular(reporte.id, motivo="Anulación de prueba del contrato", usuario_id=contador)
+        estado = "EXPORTADO" if accion == "exportar" else "ANULADO"
+        for usuario in ("contador", "auxiliar"):
+            (vista,) = self.de_tipo(usuario, T.REPORTE_DISPONIBLE)
+            assert vista.resolucion == f"El reporte quedó {estado} (usuario {contador})."
+
+    def test_consolidacion_bloqueada_para_el_contador_y_atendida_al_resolver_la_ultima_alerta(self):
+        primera, segunda = self.en_alerta(), self.en_alerta()
+        jornada = self.t.obtener(primera).fecha_jornada
+        with pytest.raises(ConsolidacionBloqueadaError):
+            self.cerrar(jornada)
+        (bloqueo,) = self.de_tipo("contador", T.CONSOLIDACION_BLOQUEADA)
+        assert (bloqueo.fecha_jornada, bloqueo.datos["pendientes"]) == (jornada, 2)
+        assert self.de_tipo("auxiliar", T.CONSOLIDACION_BLOQUEADA) == []
+        assert self.de_tipo("admin", T.CONSOLIDACION_BLOQUEADA) == []
+
+        self.t.aprobar(primera, usuario_id=self.u["contador"])
+        with pytest.raises(ConsolidacionBloqueadaError):
+            self.cerrar(jornada)  # el mismo bloqueo, actualizado: no una segunda notificación
+        (bloqueo,) = self.de_tipo("contador", T.CONSOLIDACION_BLOQUEADA)
+        assert bloqueo.datos["pendientes"] == 1 and bloqueo.atendida_en is None
+
+        self.t.rechazar(segunda, motivo="Rechazo de prueba del contrato", usuario_id=self.u["contador"])
+        (bloqueo,) = self.de_tipo("contador", T.CONSOLIDACION_BLOQUEADA)
+        assert bloqueo.atendida_en is not None
+        assert bloqueo.resolucion == "Ya no quedan transacciones en alerta en la jornada."
+
+    def test_exportacion_fallida_para_el_admin_y_atendida_al_exportar(self):
+        jornada = self.t.obtener(self.aprobada()).fecha_jornada
+        reporte = self.cerrar(jornada)
+
+        def falla(*_):
+            raise OSError("disco lleno")
+
+        with pytest.raises(ExportacionFallidaError):
+            exportar_reporte(self.r, reporte.id, usuario_id=self.u["contador"], generar=falla, notificaciones=self.n)
+        (fallida,) = self.de_tipo("admin", T.EXPORTACION_FALLIDA)
+        assert fallida.reporte_id == reporte.id and "disco lleno" in fallida.mensaje
+        assert fallida.se_atiende_a_mano is False
+        assert self.de_tipo("contador", T.EXPORTACION_FALLIDA) == []
+
+        exportar_reporte(
+            self.r, reporte.id, usuario_id=self.u["contador"], generar=lambda *_: b"<x/>", notificaciones=self.n
+        )
+        (fallida,) = self.de_tipo("admin", T.EXPORTACION_FALLIDA)
+        assert fallida.atendida_en is not None
+
