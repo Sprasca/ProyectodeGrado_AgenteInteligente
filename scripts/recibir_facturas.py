@@ -4,8 +4,9 @@ Cada factura pasa por el mismo flujo de la carga por la API (clasificación híb
 con canal "carpeta" y sin usuario. Los archivos procesados van a DIRECTORIO_RECIBIDOS y los que
 fallan a DIRECTORIO_NO_RECIBIDOS, con un <archivo>.motivo.json.
 
-El mismo proceso hace el cierre diario programado (RF06) a la HORA_CIERRE de Colombia, o al arrancar
-si esa hora ya pasó y la jornada no se ha cerrado en esta ejecución.
+El mismo proceso hace el cierre diario programado (RF06): un solo intento a la HORA_CIERRE de Colombia
+(guardada en la base: GET/PUT /reportes/horario), o al arrancar si esa hora ya pasó y la jornada no tiene
+cierre ni un intento registrado. Si no puede cerrar, registra la alerta técnica JORNADA_SIN_CIERRE.
 
 Uso:
     uv run python scripts/recibir_facturas.py               # vigila y hace el cierre diario, hasta Ctrl+C
@@ -49,9 +50,9 @@ def main(argv: list[str] | None = None) -> int:
 
     tareas = []
     if not args.sin_cierre:
-        cierre = cierre_por_defecto(get_settings())
+        cierre = cierre_por_defecto()
         logging.getLogger("agente.reportes").info(
-            "Cierre diario programado a las %s (hora de Colombia).", cierre.hora.strftime("%H:%M")
+            "Cierre diario programado a la HORA_CIERRE guardada en la base (hora de Colombia)."
         )
         tareas.append(cierre.revisar)
     vigilante = VigilanteEntrada(receptor, intervalo=args.intervalo, tareas=tareas)

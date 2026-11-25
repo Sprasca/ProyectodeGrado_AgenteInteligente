@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 from alembic import command
-from alembic_pruebas import configuracion_alembic
+from alembic_pruebas import configuracion_alembic, insertar_reporte
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -29,14 +29,7 @@ def _transaccion(sesion: Session) -> uuid.UUID:
 
 
 def _reporte(sesion: Session, estado: str = "CONSOLIDADO") -> None:
-    sesion.execute(
-        text(
-            "INSERT INTO reporte_diario (id, fecha_jornada, corte, estado, numero_transacciones, total_debito, "
-            "total_credito, valor_total, movimientos, subtotales) VALUES (:id, '2026-11-24', now(), :estado, 0, 0, 0, "
-            "0, '[]', '[]')"
-        ),
-        {"id": uuid.uuid4(), "estado": estado},
-    )
+    insertar_reporte(sesion, "PARCIAL", 1, 1, estado)
 
 
 def test_la_migracion_0009_sube_con_datos_y_se_revierte(base_temporal):

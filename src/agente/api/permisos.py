@@ -26,6 +26,7 @@ class Permiso(StrEnum):
     CONSOLIDAR_REPORTES = "CONSOLIDAR_REPORTES"  # cerrar la jornada (RF06)
     EXPORTAR_REPORTES = "EXPORTAR_REPORTES"  # autorizar y exportar en un solo paso (RF07)
     ANULAR_REPORTES = "ANULAR_REPORTES"  # anular un reporte CONSOLIDADO (ampliación del manual)
+    CONFIGURAR_JORNADA = "CONFIGURAR_JORNADA"  # cambiar la hora de apertura y de cierre de la jornada
 
 
 PERMISOS_POR_ROL: dict[Rol, frozenset[Permiso]] = {
@@ -37,6 +38,7 @@ PERMISOS_POR_ROL: dict[Rol, frozenset[Permiso]] = {
             Permiso.CONSOLIDAR_REPORTES,
             Permiso.EXPORTAR_REPORTES,
             Permiso.ANULAR_REPORTES,
+            Permiso.CONFIGURAR_JORNADA,
         }
     ),
     Rol.AUXILIAR: frozenset({Permiso.LEER, Permiso.CARGAR_FACTURAS, Permiso.CONSOLIDAR_REPORTES}),
@@ -67,8 +69,13 @@ PERMISO_POR_RUTA: dict[tuple[str, str], Permiso] = {
     ("POST", "/reglas/{codigo}/activar"): Permiso.ADMINISTRAR_CATALOGO,
     ("POST", "/reglas/{codigo}/desactivar"): Permiso.ADMINISTRAR_CATALOGO,
     # Reportes diarios (RF06, RF07). La descarga del XML es lectura: el auxiliar lo carga en el ERP.
+    # El horario lo consultan el contador y el auxiliar; solo el contador lo cambia.
     ("POST", "/reportes/consolidar"): Permiso.CONSOLIDAR_REPORTES,
     ("GET", "/reportes"): Permiso.LEER,
+    ("GET", "/reportes/jornada"): Permiso.LEER,
+    ("GET", "/reportes/horario"): Permiso.LEER,
+    ("GET", "/reportes/horario/historial"): Permiso.LEER,
+    ("PUT", "/reportes/horario"): Permiso.CONFIGURAR_JORNADA,
     ("GET", "/reportes/{id_reporte}"): Permiso.LEER,
     ("GET", "/reportes/{id_reporte}/eventos"): Permiso.LEER,
     ("GET", "/reportes/{id_reporte}/xml"): Permiso.LEER,

@@ -3,8 +3,6 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
-from .domain.jornada import hora_de_cierre
-
 RAIZ = Path(__file__).resolve().parents[2]
 
 # De dónde sale el catálogo con el que se clasifica: la base de datos (lo que administra
@@ -75,8 +73,6 @@ class Settings:
         self.recepcion_espera_estabilidad = _segundos(
             obtener("RECEPCION_ESPERA_ESTABILIDAD", "1"), "RECEPCION_ESPERA_ESTABILIDAD"
         )
-        # Cierre diario (RF06): hora de Colombia a la que se consolida automáticamente el reporte del día.
-        self.hora_cierre = hora_de_cierre(obtener("HORA_CIERRE", "18:00"))
 
     @property
     def tamano_maximo_documento(self) -> int:

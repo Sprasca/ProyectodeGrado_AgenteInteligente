@@ -2,6 +2,7 @@
 
 import uuid
 from dataclasses import asdict
+from datetime import date
 from decimal import Decimal
 from typing import Annotated
 from urllib.parse import quote
@@ -19,11 +20,19 @@ from ..application.clasificar_con_nlp import (
     procesar_carpeta,
 )
 from ..application.registrar_documento import clasificar_documento, guardar_documento
-from ..application.reportes import consolidar_reporte, exportar_reporte
+from ..application.reportes import consolidar_reporte, estado_jornada, exportar_reporte
 from ..config import get_settings
 from ..domain.asiento import Partida
 from ..domain.documento import DocumentoOriginal
-from ..domain.enums import CanalRecepcion, EstadoReporte, EstadoTransaccion, Naturaleza, Rol, TipoDocumento
+from ..domain.enums import (
+    CanalRecepcion,
+    EstadoReporte,
+    EstadoTransaccion,
+    Naturaleza,
+    Rol,
+    TipoDocumento,
+    TipoReporte,
+)
 from ..domain.errors import (
     AsientoInvalidoError,
     ConflictoReglaError,
@@ -44,8 +53,10 @@ from ..domain.errors import (
     UsuarioDuplicadoError,
     UsuarioNoEncontradoError,
 )
+from ..domain.jornada import Horario, hora_hhmm
 from ..domain.puc import CatalogoPUC, ReglaIngreso
 from ..infrastructure.db.catalogo import ReglaGuardada, RepositorioCatalogo, RepositorioCatalogoSQL
+from ..infrastructure.db.jornada import RepositorioHorario, RepositorioHorarioSQL
 from ..infrastructure.db.reportes import RepositorioReportes, RepositorioReportesSQL
 from ..infrastructure.db.session import fabrica_compartida
 from ..infrastructure.db.transacciones import (
@@ -107,6 +118,14 @@ def get_repositorio_reportes() -> RepositorioReportes:
 
 
 RepoReportes = Annotated[RepositorioReportes, Depends(get_repositorio_reportes)]
+
+
+def get_repositorio_horario() -> RepositorioHorario:
+    """Horario de la jornada en PostgreSQL. Las pruebas lo reemplazan con app.dependency_overrides."""
+    return RepositorioHorarioSQL(fabrica_compartida())
+
+
+RepoHorario = Annotated[RepositorioHorario, Depends(get_repositorio_horario)]
 
 
 def _manejador(codigo: int):
@@ -225,6 +244,32 @@ class UsuarioEntrada(BaseModel):
     nombre_completo: str
     contrasena: str
     rol: Rol
+
+
+class SolicitudConsolidacion(BaseModel):
+    """PARCIAL: la jornada en curso. CIERRE: por defecto la última jornada terminada (o la de fecha_jornada)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: TipoReporte = TipoReporte.PARCIAL
+    fecha_jornada: date | None = None
+
+
+class HorarioEntrada(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hora_apertura: str  # HH:MM, hora de Colombia
+    hora_cierre: str
+
+
+def _horario_respuesta(horario: Horario) -> dict:
+    return {
+        "hora_apertura": f"{horario.hora_apertura:%H:%M}",
+        "hora_cierre": f"{horario.hora_cierre:%H:%M}",
+        "zona_horaria": "America/Bogota",
+        "actualizado_por": horario.actualizado_por,
+        "actualizado_en": horario.actualizado_en,
+    }
 
 
 class UsuarioEdicion(BaseModel):
@@ -455,18 +500,65 @@ def historial_regla(codigo: str, repositorio: RepoCatalogo):
 
 
 @app.post("/reportes/consolidar", status_code=status.HTTP_201_CREATED)
-def consolidar(usuario: UsuarioAutorizado, reportes: RepoReportes):
+def consolidar(
+    usuario: UsuarioAutorizado,
+    reportes: RepoReportes,
+    horarios: RepoHorario,
+    solicitud: Annotated[SolicitudConsolidacion | None, Body()] = None,
+):
     """
-    Cierra la jornada: consolida lo recibido hasta ahora (hora de Colombia) en un reporte CONSOLIDADO.
-    Alertas sin resolver → 409 con "pendientes". Nada que consolidar → 409 (no se crea un reporte vacío).
-    Débitos ≠ créditos → 500 (error de integridad).
+    Cuerpo opcional {"tipo": "PARCIAL" | "CIERRE", "fecha_jornada": "AAAA-MM-DD"}; por defecto, un PARCIAL.
+    PARCIAL: las transacciones aprobadas sin reporte de la jornada en curso, hasta ahora (máximo 4 vigentes).
+    CIERRE: las de la jornada (por defecto, la última terminada), con corte a su HORA_CIERRE; uno solo.
+    Alertas en la jornada → 409 con "pendientes". Jornada cerrada, límite de parciales, cierre antes de
+    hora o nada que consolidar → 409. Débitos ≠ créditos → 500 (error de integridad).
     """
-    return jsonable_encoder(consolidar_reporte(reportes, usuario_id=usuario.id))
+    solicitud = solicitud or SolicitudConsolidacion()
+    reporte = consolidar_reporte(
+        reportes,
+        horarios.vigente(),
+        usuario_id=usuario.id,
+        tipo=solicitud.tipo,
+        fecha_jornada=solicitud.fecha_jornada,
+    )
+    return jsonable_encoder(reporte)
 
 
 @app.get("/reportes", dependencies=[Autorizado])
-def listar_reportes(reportes: RepoReportes, estado: EstadoReporte | None = None):
-    return jsonable_encoder(reportes.listar(estado))
+def listar_reportes(reportes: RepoReportes, estado: EstadoReporte | None = None, fecha_jornada: date | None = None):
+    return jsonable_encoder(reportes.listar(estado, fecha_jornada))
+
+
+# Las rutas fijas van antes de /reportes/{id_reporte}, que si no las tomaría como un id.
+@app.get("/reportes/jornada", dependencies=[Autorizado])
+def jornada(reportes: RepoReportes, horarios: RepoHorario, fecha: date | None = None):
+    """
+    La jornada (por defecto, la en curso): horario, cuántos reportes lleva, si tiene cierre, alertas
+    pendientes y si se puede consolidar un parcial o el cierre (con los motivos si no).
+    """
+    return jsonable_encoder(estado_jornada(reportes, horarios.vigente(), fecha_jornada=fecha))
+
+
+@app.get("/reportes/horario", dependencies=[Autorizado])
+def consultar_horario(horarios: RepoHorario):
+    return _horario_respuesta(horarios.vigente())
+
+
+@app.get("/reportes/horario/historial", dependencies=[Autorizado])
+def historial_horario(horarios: RepoHorario):
+    """Todos los horarios con quién los fijó y cuándo, del más reciente al más antiguo."""
+    return [_horario_respuesta(h) for h in horarios.historial()]
+
+
+@app.put("/reportes/horario")
+def cambiar_horario(entrada: HorarioEntrada, usuario: UsuarioAutorizado, horarios: RepoHorario):
+    """
+    Solo el contador. Horas HH:MM de Colombia; la apertura antes del cierre (si no, 422). Un cambio que
+    movería la jornada en curso → 409. Las transacciones ya recibidas conservan su jornada.
+    """
+    apertura = hora_hhmm(entrada.hora_apertura, "La hora de apertura")
+    cierre = hora_hhmm(entrada.hora_cierre, "La hora de cierre")
+    return _horario_respuesta(horarios.cambiar(apertura, cierre, usuario_id=usuario.id))
 
 
 @app.get("/reportes/{id_reporte}", dependencies=[Autorizado])

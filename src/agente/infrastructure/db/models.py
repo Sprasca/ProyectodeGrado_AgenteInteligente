@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
@@ -11,10 +11,13 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     LargeBinary,
     Numeric,
+    SmallInteger,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
     text,
@@ -100,6 +103,9 @@ class TransaccionModel(Base):
         ForeignKey("reporte_diario.id", name="fk_transaccion_reporte"), nullable=True, index=True
     )
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Jornada contable a la que pertenece: la del día si llegó antes de la HORA_CIERRE de Colombia, si no la
+    # del día siguiente. Se fija al recibirla: cambiar el horario no la mueve.
+    fecha_jornada: Mapped[date] = mapped_column(Date, index=True)
 
     partidas: Mapped[list["PartidaModel"]] = relationship(back_populates="transaccion", cascade="all, delete-orphan")
 
@@ -136,7 +142,8 @@ class EventoTransaccionModel(Base):
     __tablename__ = "evento_transaccion"
     __table_args__ = (
         CheckConstraint(
-            "tipo IN ('RECIBIDA', 'CLASIFICADA', 'APROBADA', 'CORREGIDA', 'RECHAZADA', 'CONSOLIDADA', 'LIBERADA')",
+            "tipo IN ('RECIBIDA', 'CLASIFICADA', 'APROBADA', 'CORREGIDA', 'RECHAZADA', 'CONSOLIDADA', 'LIBERADA', "
+            "'EXPORTADA')",
             name="ck_evento_transaccion_tipo",
         ),
     )
@@ -175,7 +182,14 @@ class DocumentoModel(Base):
 
 
 class ReporteDiarioModel(Base):
-    """Reporte de transacciones diarias (RF06) y, cuando se exporta, el XML generado (RF07)."""
+    """
+    Reporte de transacciones diarias (RF06) y, cuando se exporta, el XML generado (RF07).
+
+    Hasta 5 reportes vigentes (no ANULADOS) por jornada, impuesto por la base con el `cupo`: los PARCIALES
+    ocupan los cupos 1 a 4 y el de CIERRE el 5, y un cupo no se repite entre los vigentes de una jornada.
+    Así el límite de parciales nunca impide cerrar el día y hay un solo cierre vigente por jornada.
+    `numero` es el consecutivo dentro de la jornada: cuenta también los anulados y no se reutiliza.
+    """
 
     __tablename__ = "reporte_diario"
     __table_args__ = (
@@ -185,10 +199,35 @@ class ReporteDiarioModel(Base):
             "(estado = 'EXPORTADO') = (archivo_xml IS NOT NULL AND archivo_sha256 IS NOT NULL)",
             name="ck_reporte_diario_exportado_con_archivo",
         ),
+        CheckConstraint("tipo IN ('PARCIAL', 'CIERRE')", name="ck_reporte_diario_tipo"),
+        CheckConstraint(
+            "(tipo = 'PARCIAL' AND cupo BETWEEN 1 AND 4) OR (tipo = 'CIERRE' AND cupo = 5)",
+            name="ck_reporte_diario_cupo",
+        ),
+        CheckConstraint("numero >= 1", name="ck_reporte_diario_numero"),
+        UniqueConstraint("fecha_jornada", "numero", name="uq_reporte_diario_jornada_numero"),
+        # Máximo 5 vigentes por jornada (4 parciales y el cierre): un cupo no se repite entre los vigentes.
+        Index(
+            "uq_reporte_diario_cupo_vigente",
+            "fecha_jornada",
+            "cupo",
+            unique=True,
+            postgresql_where=text("estado <> 'ANULADO'"),
+        ),
+        # Un solo reporte de cierre vigente por jornada (lo implica el cupo 5; se declara explícito).
+        Index(
+            "uq_reporte_diario_cierre_vigente",
+            "fecha_jornada",
+            unique=True,
+            postgresql_where=text("tipo = 'CIERRE' AND estado <> 'ANULADO'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     fecha_jornada: Mapped[date] = mapped_column(Date, index=True)
+    tipo: Mapped[str] = mapped_column(String(7))
+    numero: Mapped[int]
+    cupo: Mapped[int] = mapped_column(SmallInteger)
     corte: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     estado: Mapped[str] = mapped_column(String(12))
     numero_transacciones: Mapped[int]
@@ -239,3 +278,43 @@ class EventoReporteModel(Base):
     fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
     despues: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class HorarioJornadaModel(Base):
+    """
+    Horario de la jornada que define el contador. Solo se agregan filas: la vigente es la de mayor id y las
+    anteriores registran quién cambió el horario y cuándo (usuario NULL: el valor inicial 08:00-18:00).
+    """
+
+    __tablename__ = "horario_jornada"
+    __table_args__ = (CheckConstraint("hora_apertura < hora_cierre", name="ck_horario_jornada_apertura_cierre"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hora_apertura: Mapped[time] = mapped_column(Time)
+    hora_cierre: Mapped[time] = mapped_column(Time)
+    usuario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", name="fk_horario_jornada_usuario"), nullable=True
+    )
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AlertaTecnicaModel(Base):
+    """
+    Alertas técnicas para el responsable; hoy, la jornada que quedó sin reporte de cierre. La Fase 5 las
+    convertirá en notificaciones y llenará notificada_en. Una por tipo y jornada: el cierre programado hace
+    un solo intento y esta fila deja constancia de que ya lo hizo.
+    """
+
+    __tablename__ = "alerta_tecnica"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('JORNADA_SIN_CIERRE')", name="ck_alerta_tecnica_tipo"),
+        UniqueConstraint("tipo", "fecha_jornada", name="uq_alerta_tecnica_tipo_jornada"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(30))
+    fecha_jornada: Mapped[date | None] = mapped_column(Date, nullable=True)
+    mensaje: Mapped[str] = mapped_column(Text)
+    datos: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    notificada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

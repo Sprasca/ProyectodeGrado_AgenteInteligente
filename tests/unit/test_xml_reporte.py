@@ -16,6 +16,7 @@ from agente.application.reportes import consolidar_reporte, exportar_reporte
 from agente.domain.asiento import Partida
 from agente.domain.enums import EstadoReporte
 from agente.domain.errors import ExportacionFallidaError
+from agente.domain.jornada import HORARIO_INICIAL
 from agente.infrastructure.erp.xml_reporte import ESPACIO_DE_NOMBRES, VERSION_FORMATO, generar_xml_reporte
 
 NS = {"r": ESPACIO_DE_NOMBRES}
@@ -28,7 +29,7 @@ def consolidado(catalogo):
     reportes = RepositorioReportesMemoria(transacciones)
     for numero in ("FV-1", "FV-2"):
         transacciones.guardar(resultado_aprobado(catalogo, numero))
-    reporte = consolidar_reporte(reportes, usuario_id=2)
+    reporte = consolidar_reporte(reportes, HORARIO_INICIAL, usuario_id=2)
     incluidas = [transacciones.obtener(i) for i in reporte.transacciones]
     return reporte, incluidas, transacciones, reportes
 

@@ -13,8 +13,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from agente.api.autenticacion import crear_token, get_repositorio_usuarios
-from agente.api.main import app, get_catalogo, get_repositorio, get_repositorio_reportes
+from agente.api.main import app, get_catalogo, get_repositorio, get_repositorio_horario, get_repositorio_reportes
 from agente.domain.enums import Rol
+from agente.infrastructure.db.jornada import RepositorioHorarioSQL
 from agente.infrastructure.db.models import (
     EventoReporteModel,
     EventoTransaccionModel,
@@ -38,6 +39,8 @@ def api_bd(bd_sembrada, catalogo):
     }
     app.dependency_overrides[get_repositorio] = lambda: transacciones
     app.dependency_overrides[get_repositorio_reportes] = lambda: RepositorioReportesSQL(bd_sembrada)
+    # Todo sobre la base temporal: sin esto la API abriría la fábrica compartida con la URL temporal.
+    app.dependency_overrides[get_repositorio_horario] = lambda: RepositorioHorarioSQL(bd_sembrada)
     app.dependency_overrides[get_repositorio_usuarios] = lambda: usuarios
     app.dependency_overrides[get_catalogo] = lambda: catalogo
     try:

@@ -10,23 +10,28 @@ from itertools import count
 
 from repositorio_memoria import RepositorioMemoria
 
-from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento
-from agente.domain.errors import ConsolidacionBloqueadaError, ReporteNoEncontradoError, SinTransaccionesError
+from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoReporte
+from agente.domain.errors import ReporteNoEncontradoError
 from agente.domain.reportes import (
+    CUPO_CIERRE,
     ESTADOS_CONSOLIDABLES,
     ArchivoExportado,
     EventoReporte,
     ReporteDiario,
+    ResumenJornada,
     consolidar_movimientos,
     exigir_sin_alertas,
+    exigir_transacciones,
     validar_anulacion,
     validar_exportacion,
+    validar_nuevo_reporte,
 )
 from agente.domain.transacciones import exigir_motivo
 from agente.infrastructure.db.reportes import (
     GeneradorArchivo,
     datos_consolidado,
     datos_exportacion,
+    datos_vinculo,
     generar_archivo,
 )
 
@@ -35,6 +40,7 @@ class RepositorioReportesMemoria:
     def __init__(self, transacciones: RepositorioMemoria) -> None:
         self.transacciones = transacciones
         self._reportes: dict[uuid.UUID, ReporteDiario] = {}
+        self._cupos: dict[uuid.UUID, int] = {}
         self._eventos: list[EventoReporte] = []
         self._archivos: dict[uuid.UUID, ArchivoExportado] = {}
         self._ids_evento = count(1)
@@ -44,23 +50,49 @@ class RepositorioReportesMemoria:
             EventoReporte(next(self._ids_evento), reporte_id, tipo, usuario_id, datetime.now(UTC), motivo, despues)
         )
 
-    def consolidar(self, *, corte: datetime, fecha_jornada: date, usuario_id: int | None = None) -> ReporteDiario:
+    def _de_la_jornada(self, fecha_jornada: date):
         todas = sorted(self.transacciones._por_id.values(), key=lambda t: (t.creado_en, t.numero_factura))
-        hasta_el_corte = [t for t in todas if t.creado_en <= corte]
-        pendientes = sum(1 for t in hasta_el_corte if t.estado is EstadoTransaccion.EN_ALERTA)
-        if pendientes:
-            raise ConsolidacionBloqueadaError(pendientes)
-        incluidas = [t for t in hasta_el_corte if t.estado in ESTADOS_CONSOLIDABLES and t.reporte_id is None]
-        if not incluidas:
-            raise SinTransaccionesError(
-                "No hay transacciones aprobadas sin reporte hasta el corte: no se genera un reporte vacío."
-            )
+        return [t for t in todas if t.fecha_jornada == fecha_jornada]
+
+    def resumen_jornada(self, fecha_jornada: date) -> ResumenJornada:
+        de_la_jornada = [r for r in self._reportes.values() if r.fecha_jornada == fecha_jornada]
+        vigentes = [r for r in de_la_jornada if r.estado is not EstadoReporte.ANULADO]
+        transacciones = self._de_la_jornada(fecha_jornada)
+        return ResumenJornada(
+            fecha_jornada=fecha_jornada,
+            cupos_ocupados=frozenset(self._cupos[r.id] for r in vigentes),
+            cierre_id=next((r.id for r in vigentes if self._cupos[r.id] == CUPO_CIERRE), None),
+            ultimo_numero=max((r.numero for r in de_la_jornada), default=0),
+            alertas_pendientes=sum(1 for t in transacciones if t.estado is EstadoTransaccion.EN_ALERTA),
+            transacciones_sin_reporte=sum(
+                1 for t in transacciones if t.estado in ESTADOS_CONSOLIDABLES and t.reporte_id is None
+            ),
+        )
+
+    def consolidar(
+        self,
+        *,
+        fecha_jornada: date,
+        tipo: TipoReporte,
+        corte: datetime,
+        usuario_id: int | None = None,
+    ) -> ReporteDiario:
+        resumen = self.resumen_jornada(fecha_jornada)
+        cupo = validar_nuevo_reporte(resumen, tipo)
+        incluidas = [
+            t
+            for t in self._de_la_jornada(fecha_jornada)
+            if t.estado in ESTADOS_CONSOLIDABLES and t.reporte_id is None
+        ]
+        exigir_transacciones(tipo, len(incluidas), resumen.parciales_vigentes)
         consolidado = consolidar_movimientos(incluidas)
         reporte = ReporteDiario(
             id=uuid.uuid4(),
             fecha_jornada=fecha_jornada,
             corte=corte,
             estado=EstadoReporte.CONSOLIDADO,
+            tipo=tipo,
+            numero=resumen.ultimo_numero + 1,
             numero_transacciones=consolidado.numero_transacciones,
             total_debito=consolidado.total_debito,
             total_credito=consolidado.total_credito,
@@ -71,7 +103,8 @@ class RepositorioReportesMemoria:
             creado_en=datetime.now(UTC),
         )
         self._reportes[reporte.id] = reporte
-        vinculo = {"reporte_id": str(reporte.id), "fecha_jornada": fecha_jornada.isoformat()}
+        self._cupos[reporte.id] = cupo
+        vinculo = datos_vinculo(reporte.id, fecha_jornada, tipo, reporte.numero)
         for t in incluidas:
             self.transacciones._por_id[t.id] = replace(t, reporte_id=reporte.id)
             self.transacciones._registrar(t.id, TipoEvento.CONSOLIDADA, usuario_id, despues=vinculo)
@@ -81,9 +114,13 @@ class RepositorioReportesMemoria:
     def obtener(self, id_reporte: uuid.UUID) -> ReporteDiario | None:
         return self._reportes.get(id_reporte)
 
-    def listar(self, estado: EstadoReporte | None = None) -> list[ReporteDiario]:
+    def listar(self, estado: EstadoReporte | None = None, fecha_jornada: date | None = None) -> list[ReporteDiario]:
         reportes = sorted(self._reportes.values(), key=lambda r: r.creado_en, reverse=True)
-        return [r for r in reportes if estado is None or r.estado is estado]
+        return [
+            r
+            for r in reportes
+            if (estado is None or r.estado is estado) and (fecha_jornada is None or r.fecha_jornada == fecha_jornada)
+        ]
 
     def _cargar(self, id_reporte: uuid.UUID) -> ReporteDiario:
         reporte = self._reportes.get(id_reporte)
@@ -111,7 +148,8 @@ class RepositorioReportesMemoria:
             exportado_por=usuario_id,
             archivo_sha256=archivo.sha256,
         )
-        self._registrar(id_reporte, EstadoReporte.EXPORTADO, usuario_id, despues=datos_exportacion(archivo))
+        exportado = datos_exportacion(archivo)
+        self._registrar(id_reporte, EstadoReporte.EXPORTADO, usuario_id, despues=exportado)
         return self._reportes[id_reporte]
 
     def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
@@ -121,7 +159,8 @@ class RepositorioReportesMemoria:
     def anular(self, id_reporte: uuid.UUID, *, motivo: str, usuario_id: int | None) -> ReporteDiario:
         motivo = exigir_motivo(motivo, "anular un reporte")
         reporte = self._cargar(id_reporte)
-        validar_anulacion(reporte.estado)
+        cierre = self.resumen_jornada(reporte.fecha_jornada).cierre_id
+        validar_anulacion(reporte.estado, reporte.tipo, cierre is not None)
         liberada = {"reporte_id": str(id_reporte), "reporte_estado": EstadoReporte.ANULADO.value}
         for t in list(self.transacciones._por_id.values()):
             if t.reporte_id == id_reporte:

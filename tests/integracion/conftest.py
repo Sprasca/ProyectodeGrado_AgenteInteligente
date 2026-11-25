@@ -18,7 +18,7 @@ from agente.infrastructure.db.models import (
     ReglaClasificacionModel,
     TransaccionModel,
 )
-from agente.infrastructure.db.session import crear_sessionmaker
+from agente.infrastructure.db.session import crear_sessionmaker, fabrica_compartida
 
 
 @pytest.fixture(scope="session")
@@ -138,12 +138,15 @@ def base_temporal(fabrica_bd, monkeypatch):
     temporal = url.set(database=nombre)
     monkeypatch.setenv("DATABASE_URL", temporal.render_as_string(hide_password=False))
     get_settings.cache_clear()
+    # Si algo abre la fábrica compartida durante la prueba, que no quede apuntando a la base temporal.
+    fabrica_compartida.cache_clear()
     motor = create_engine(temporal)
     try:
         yield motor
     finally:
         motor.dispose()
         get_settings.cache_clear()
+        fabrica_compartida.cache_clear()
         with administracion.connect() as conexion:
             conexion.execute(text(f'DROP DATABASE IF EXISTS "{nombre}" WITH (FORCE)'))
         administracion.dispose()

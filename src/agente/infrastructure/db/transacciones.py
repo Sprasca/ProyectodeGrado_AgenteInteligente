@@ -18,6 +18,7 @@ from ...domain.asiento import Partida
 from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
+from ...domain.jornada import jornada_de
 from ...domain.puc import CatalogoPUC
 from ...domain.reportes import exigir_sin_reporte
 from ...domain.resultado import ResultadoClasificacion
@@ -28,6 +29,7 @@ from ...domain.transacciones import (
     validar_correccion,
     validar_rechazo,
 )
+from .horario import horario_vigente
 from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
 
 
@@ -86,6 +88,8 @@ class TransaccionRegistrada:
     cufe: str | None = None
     # Reporte diario vigente (RF06). Con reporte, la transacción no se puede corregir ni rechazar.
     reporte_id: uuid.UUID | None = None
+    # Jornada a la que pertenece (fijada al recibirla con la HORA_CIERRE vigente, en hora de Colombia).
+    fecha_jornada: date | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +324,7 @@ def a_registro(t: TransaccionModel) -> TransaccionRegistrada:
         corregido_en=t.corregido_en,
         cufe=t.cufe,
         reporte_id=t.reporte_id,
+        fecha_jornada=t.fecha_jornada,
     )
 
 
@@ -373,8 +378,12 @@ class RepositorioSQL:
                     )
                     if existente is not None:
                         raise documento_duplicado(documento.sha256, existente)
+                # La jornada se fija al recibirla, con la HORA_CIERRE vigente (hora de Colombia).
+                recibida = datetime.now(UTC)
                 t = TransaccionModel(
                     id=uuid.uuid4(),
+                    creado_en=recibida,
+                    fecha_jornada=jornada_de(recibida, horario_vigente(sesion).hora_cierre),
                     numero_factura=factura.numero,
                     fecha=factura.fecha,
                     nit_adquirente=factura.adquirente.nit,

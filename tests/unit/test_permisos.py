@@ -43,6 +43,11 @@ ESPERADO: dict[tuple[str, str], set[Rol]] = {
     # La consulta y la descarga del XML son lectura (el auxiliar carga el XML en el ERP, RF07 paso 7).
     ("POST", "/reportes/consolidar"): {C, A},
     ("GET", "/reportes"): LECTURA,
+    ("GET", "/reportes/jornada"): LECTURA,
+    # Horario de la jornada: lo consultan el CONTADOR y el AUXILIAR; solo el CONTADOR lo cambia.
+    ("GET", "/reportes/horario"): {C, A},
+    ("GET", "/reportes/horario/historial"): {C, A},
+    ("PUT", "/reportes/horario"): {C},
     ("GET", "/reportes/{id_reporte}"): LECTURA,
     ("GET", "/reportes/{id_reporte}/eventos"): LECTURA,
     ("GET", "/reportes/{id_reporte}/xml"): LECTURA,
@@ -72,6 +77,7 @@ CUERPOS = {
     },
     ("PUT", "/usuarios/{id_usuario}"): {"json": {"nombre_completo": "Otro nombre"}},
     ("POST", "/reportes/{id_reporte}/anular"): {"json": {"motivo": "Motivo de prueba"}},
+    ("PUT", "/reportes/horario"): {"json": {"hora_apertura": "08:00", "hora_cierre": "18:00"}},
 }
 
 

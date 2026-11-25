@@ -63,6 +63,7 @@ class TipoEvento(StrEnum):
     RECHAZADA = "RECHAZADA"
     CONSOLIDADA = "CONSOLIDADA"  # incluida en un reporte diario (RF06)
     LIBERADA = "LIBERADA"  # su reporte se anuló: vuelve a poder corregirse y consolidarse
+    EXPORTADA = "EXPORTADA"  # su reporte se exportó al ERP (RF07), con el usuario que exportó
 
 
 class EstadoReporte(StrEnum):
@@ -71,6 +72,17 @@ class EstadoReporte(StrEnum):
     CONSOLIDADO = "CONSOLIDADO"
     EXPORTADO = "EXPORTADO"  # final: nunca se anula ni se exporta otra vez
     ANULADO = "ANULADO"  # final: sus transacciones quedan libres
+
+
+class TipoReporte(StrEnum):
+    """Hasta 4 PARCIALES vigentes por jornada, hechos a mano, y un solo CIERRE con corte a la HORA_CIERRE."""
+
+    PARCIAL = "PARCIAL"
+    CIERRE = "CIERRE"
+
+
+class TipoAlertaTecnica(StrEnum):
+    JORNADA_SIN_CIERRE = "JORNADA_SIN_CIERRE"
 
 
 class TipoDocumento(StrEnum):
