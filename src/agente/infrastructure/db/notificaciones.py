@@ -21,7 +21,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ...domain.enums import ClaseNotificacion, EstadoEnvio, Rol, TipoNotificacion
 from ...domain.errors import NotificacionNoEncontradaError
-from ...domain.notificaciones import Causa, Notificacion, roles_destinatarios, validar_atencion_manual
+from ...domain.notificaciones import (
+    Causa,
+    EnvioPendiente,
+    Notificacion,
+    roles_destinatarios,
+    validar_atencion_manual,
+)
 from .conexion import transaccion_bd
 from .models import EnvioCorreoModel, NotificacionModel, NotificacionUsuarioModel, UsuarioModel
 
@@ -158,6 +164,18 @@ class RepositorioNotificaciones(Protocol):
         """
         ...
 
+    # --- correo (canal opcional) -------------------------------------------------------------------------
+
+    def envios_pendientes(self, ahora: datetime, limite: int = 20) -> list[EnvioPendiente]:
+        """Los PENDIENTES cuyo próximo intento ya llegó, del más antiguo al más reciente."""
+        ...
+
+    def marcar_enviado(self, id_envio: int, ahora: datetime) -> None: ...
+
+    def marcar_fallo(self, id_envio: int, error: str, proximo_intento: datetime | None) -> None:
+        """Suma un intento. Con proximo_intento sigue PENDIENTE; sin él queda FALLIDA (no se reintenta)."""
+        ...
+
 
 def _a_notificacion(n: NotificacionModel, copia: NotificacionUsuarioModel, correo: str | None) -> Notificacion:
     return Notificacion(
@@ -268,3 +286,46 @@ class RepositorioNotificacionesSQL:
             fila.resolucion = "Atendida a mano."
             sesion.flush()
             return self._una(sesion, usuario_id, id_notificacion)
+
+    # --- correo (canal opcional) -------------------------------------------------------------------------
+
+    def envios_pendientes(self, ahora: datetime, limite: int = 20) -> list[EnvioPendiente]:
+        with transaccion_bd(self._fabrica) as sesion:
+            filas = sesion.execute(
+                select(EnvioCorreoModel, NotificacionModel.tipo, NotificacionModel.mensaje)
+                .join(NotificacionModel, NotificacionModel.id == EnvioCorreoModel.notificacion_id)
+                .where(
+                    EnvioCorreoModel.estado == EstadoEnvio.PENDIENTE.value,
+                    EnvioCorreoModel.proximo_intento <= ahora,
+                )
+                .order_by(EnvioCorreoModel.proximo_intento, EnvioCorreoModel.id)
+                .limit(limite)
+            ).all()
+            return [
+                EnvioPendiente(
+                    e.id, e.notificacion_id, e.usuario_id, e.destinatario, TipoNotificacion(tipo), mensaje, e.intentos
+                )
+                for e, tipo, mensaje in filas
+            ]
+
+    def marcar_enviado(self, id_envio: int, ahora: datetime) -> None:
+        with transaccion_bd(self._fabrica) as sesion:
+            sesion.execute(
+                update(EnvioCorreoModel)
+                .where(EnvioCorreoModel.id == id_envio)
+                .values(
+                    estado=EstadoEnvio.ENVIADA.value,
+                    intentos=EnvioCorreoModel.intentos + 1,
+                    enviado_en=ahora,
+                    ultimo_error=None,
+                )
+            )
+
+    def marcar_fallo(self, id_envio: int, error: str, proximo_intento: datetime | None) -> None:
+        valores: dict = {"intentos": EnvioCorreoModel.intentos + 1, "ultimo_error": error}
+        if proximo_intento is None:
+            valores["estado"] = EstadoEnvio.FALLIDA.value
+        else:
+            valores["proximo_intento"] = proximo_intento
+        with transaccion_bd(self._fabrica) as sesion:
+            sesion.execute(update(EnvioCorreoModel).where(EnvioCorreoModel.id == id_envio).values(**valores))

@@ -9,9 +9,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import count
 
-from agente.domain.enums import TipoNotificacion
+from agente.domain.enums import EstadoEnvio, TipoNotificacion
 from agente.domain.errors import NotificacionNoEncontradaError
-from agente.domain.notificaciones import Causa, Notificacion, roles_destinatarios, validar_atencion_manual
+from agente.domain.notificaciones import (
+    Causa,
+    EnvioPendiente,
+    Notificacion,
+    roles_destinatarios,
+    validar_atencion_manual,
+)
 from agente.domain.usuarios import Usuario
 
 
@@ -28,11 +34,17 @@ class _Registro:
 
 
 class RepositorioNotificacionesMemoria:
-    def __init__(self, usuarios: Callable[[], Iterable[Usuario]] = tuple) -> None:
-        """usuarios: los usuarios del sistema (los destinatarios son los activos de cada rol)."""
+    def __init__(self, usuarios: Callable[[], Iterable[Usuario]] = tuple, correo_activo: bool = False) -> None:
+        """
+        usuarios: los usuarios del sistema (los destinatarios son los activos de cada rol).
+        correo_activo: como SMTP configurado en SQL (crea envíos para quien tiene email).
+        """
         self._usuarios = usuarios
+        self.correo_activo = correo_activo
         self._registros: dict[int, _Registro] = {}
         self._ids = count(1)
+        self._envios: dict[int, dict] = {}
+        self._ids_envio = count(1)
 
     # --- lo que en SQL ocurre dentro de la sesión de otro repositorio ----------------------------------------
 
@@ -57,7 +69,24 @@ class RepositorioNotificacionesMemoria:
         for usuario in self._usuarios():
             if usuario.activo and usuario.rol in roles:
                 abierta.copias.setdefault(usuario.id, {"informativa": roles[usuario.rol], "leida_en": None})
+                if self.correo_activo and usuario.email and causa.especificacion.por_correo:
+                    self._crear_envio(abierta, usuario, ahora)
         return abierta.id
+
+    def _crear_envio(self, registro: _Registro, usuario: Usuario, ahora: datetime) -> None:
+        if any(e["notificacion_id"] == registro.id and e["usuario_id"] == usuario.id for e in self._envios.values()):
+            return
+        id_ = next(self._ids_envio)
+        self._envios[id_] = {
+            "id": id_,
+            "notificacion_id": registro.id,
+            "usuario_id": usuario.id,
+            "destinatario": usuario.email,
+            "estado": EstadoEnvio.PENDIENTE,
+            "intentos": 0,
+            "ultimo_error": None,
+            "proximo_intento": ahora,
+        }
 
     def atender_causa(self, tipos: TipoNotificacion | Iterable[TipoNotificacion], clave: str, resolucion: str) -> int:
         tipos = {tipos} if isinstance(tipos, TipoNotificacion) else set(tipos)
@@ -94,7 +123,14 @@ class RepositorioNotificacionesMemoria:
             fecha_jornada=r.causa.fecha_jornada,
             informativa=copia["informativa"],
             leida_en=copia["leida_en"],
-            correo=copia.get("correo"),
+            correo=next(
+                (
+                    e["estado"]
+                    for e in self._envios.values()
+                    if e["notificacion_id"] == r.id and e["usuario_id"] == usuario_id
+                ),
+                None,
+            ),
         )
 
     def _cargar(self, usuario_id: int, id_notificacion: int) -> _Registro:
@@ -134,6 +170,44 @@ class RepositorioNotificacionesMemoria:
         validar_atencion_manual(r.causa.tipo, r.atendida_en is not None, r.copias[usuario_id]["informativa"])
         r.atendida_en, r.atendida_por, r.resolucion = datetime.now(UTC), usuario_id, "Atendida a mano."
         return self._vista(r, usuario_id)
+
+    # --- correo -------------------------------------------------------------------------------------------
+
+    def envios_pendientes(self, ahora: datetime, limite: int = 20) -> list[EnvioPendiente]:
+        pendientes = [
+            e
+            for e in self._envios.values()
+            if e["estado"] is EstadoEnvio.PENDIENTE and e["proximo_intento"] <= ahora
+        ]
+        pendientes.sort(key=lambda e: (e["proximo_intento"], e["id"]))
+        return [
+            EnvioPendiente(
+                e["id"],
+                e["notificacion_id"],
+                e["usuario_id"],
+                e["destinatario"],
+                self._registros[e["notificacion_id"]].causa.tipo,
+                self._registros[e["notificacion_id"]].causa.mensaje,
+                e["intentos"],
+            )
+            for e in pendientes[:limite]
+        ]
+
+    def marcar_enviado(self, id_envio: int, ahora: datetime) -> None:
+        envio = self._envios[id_envio]
+        envio.update(estado=EstadoEnvio.ENVIADA, intentos=envio["intentos"] + 1, ultimo_error=None)
+
+    def marcar_fallo(self, id_envio: int, error: str, proximo_intento: datetime | None) -> None:
+        envio = self._envios[id_envio]
+        envio.update(intentos=envio["intentos"] + 1, ultimo_error=error)
+        if proximo_intento is None:
+            envio["estado"] = EstadoEnvio.FALLIDA
+        else:
+            envio["proximo_intento"] = proximo_intento
+
+    def envios(self) -> list[dict]:
+        """Solo para las pruebas."""
+        return list(self._envios.values())
 
     # --- solo para las pruebas ------------------------------------------------------------------------------
 

@@ -256,6 +256,7 @@ class UsuarioEntrada(BaseModel):
     nombre_completo: str
     contrasena: str
     rol: Rol
+    email: str | None = None  # opcional: para recibir las notificaciones por correo
 
 
 class SolicitudConsolidacion(BaseModel):
@@ -292,6 +293,7 @@ class UsuarioEdicion(BaseModel):
     rol: Rol | None = None
     activo: bool | None = None
     nombre_completo: str | None = None
+    email: str | None = None  # "" quita el correo
 
 
 def _regla_respuesta(guardada: ReglaGuardada) -> dict:
@@ -679,16 +681,25 @@ def listar_usuarios(usuarios: RepoUsuarios):
 @app.post("/usuarios", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
 def crear_usuario(usuario: UsuarioEntrada, usuarios: RepoUsuarios):
     """Nombre repetido → 409. Datos inválidos (p. ej. contraseña de menos de 8 caracteres) → 422."""
-    creado = usuarios.crear(usuario.nombre_usuario, usuario.nombre_completo, usuario.contrasena, usuario.rol)
+    creado = usuarios.crear(
+        usuario.nombre_usuario, usuario.nombre_completo, usuario.contrasena, usuario.rol, email=usuario.email
+    )
     return jsonable_encoder(creado)
 
 
 @app.put("/usuarios/{id_usuario}", dependencies=[Autorizado])
 def actualizar_usuario(id_usuario: int, cambios: UsuarioEdicion, usuarios: RepoUsuarios):
-    """Cambia rol, estado (activo) o nombre completo. Dejar el sistema sin ADMIN activo → 409."""
-    if cambios.rol is None and cambios.activo is None and cambios.nombre_completo is None:
-        raise HTTPException(422, "Envíe al menos uno de: rol, activo, nombre_completo.")
+    """
+    Cambia rol, estado (activo), nombre completo o correo ("email": "" lo quita). Dejar el sistema sin ADMIN
+    activo → 409.
+    """
+    if cambios.rol is None and cambios.activo is None and cambios.nombre_completo is None and cambios.email is None:
+        raise HTTPException(422, "Envíe al menos uno de: rol, activo, nombre_completo, email.")
     actualizado = usuarios.actualizar(
-        id_usuario, rol=cambios.rol, activo=cambios.activo, nombre_completo=cambios.nombre_completo
+        id_usuario,
+        rol=cambios.rol,
+        activo=cambios.activo,
+        nombre_completo=cambios.nombre_completo,
+        email=cambios.email,
     )
     return jsonable_encoder(actualizado)

@@ -9,13 +9,14 @@ ContratoNotificacionesDeTransacciones pide además `transacciones` y `nuevo_nume
 ContratoNotificacionesDeReportes, además, `reportes`.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fabricas import partidas_correctas, resultado_alerta_con_asiento, resultado_aprobado
 
+from agente.application.notificaciones import DespachadorCorreos
 from agente.application.reportes import consolidar_reporte, exportar_reporte
-from agente.domain.enums import ClaseNotificacion, TipoNotificacion, TipoReporte
+from agente.domain.enums import ClaseNotificacion, EstadoEnvio, TipoNotificacion, TipoReporte
 from agente.domain.errors import (
     ConsolidacionBloqueadaError,
     ExportacionFallidaError,
@@ -340,4 +341,84 @@ class ContratoNotificacionesDeReportes:
         )
         (fallida,) = self.de_tipo("admin", T.EXPORTACION_FALLIDA)
         assert fallida.atendida_en is not None
+
+
+class ContratoEnviosCorreo:
+    """
+    El correo (canal opcional) con SMTP configurado: un envío PENDIENTE por destinatario con email, que el
+    despachador envía con hasta 3 intentos y espera creciente; si fallan, FALLIDA y CORREO_NO_ENVIADO al ADMIN.
+    Fixtures: `notificaciones` con el correo activo y `usuarios` donde el contador y el ADMIN tienen email y
+    el auxiliar no.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ayudas(self, notificaciones, usuarios):
+        self.n, self.u = notificaciones, usuarios
+        self.enviados = []
+        self.reloj = [datetime.now(UTC)]  # los envíos se crean con la hora real
+
+    def alerta(self):
+        return self.n.registrar(causa(T.TRANSACCION_EN_ALERTA, "transaccion:1", "FV-1 en alerta"))
+
+    def despachador(self, falla=None):
+        def enviar(destinatario, asunto, cuerpo):
+            if falla is not None:
+                raise falla
+            self.enviados.append((destinatario, asunto, cuerpo))
+
+        return DespachadorCorreos(self.n, enviar, intentos_maximos=3, espera_inicial=60, ahora=lambda: self.reloj[0])
+
+    def avanzar(self, segundos):
+        self.reloj[0] += timedelta(seconds=segundos)
+
+    def test_un_envio_pendiente_solo_para_quien_tiene_correo(self):
+        self.alerta()
+        (contador,) = self.n.listar(self.u["contador"])
+        (auxiliar,) = self.n.listar(self.u["auxiliar"])
+        assert (contador.correo, auxiliar.correo) == (EstadoEnvio.PENDIENTE, None)
+        (pendiente,) = self.n.envios_pendientes(self.reloj[0] + timedelta(minutes=1))
+        assert (pendiente.destinatario, pendiente.tipo, pendiente.intentos) == (
+            "contador@empresa.co",
+            T.TRANSACCION_EN_ALERTA,
+            0,
+        )
+
+    def test_el_despachador_envia_y_queda_enviada(self):
+        self.alerta()
+        self.avanzar(1)
+        assert self.despachador().revisar() == 1
+        ((destinatario, asunto, cuerpo),) = self.enviados
+        assert destinatario == "contador@empresa.co"
+        assert asunto == "[Agente PUC] Transacción en alerta" and "FV-1 en alerta" in cuerpo
+        assert self.n.listar(self.u["contador"])[0].correo is EstadoEnvio.ENVIADA
+        assert self.n.envios_pendientes(self.reloj[0] + timedelta(days=1)) == []
+
+    def test_tres_intentos_con_espera_creciente_y_luego_fallida_con_aviso_al_admin(self):
+        self.alerta()
+        despachador = self.despachador(OSError("SMTP caído"))
+        self.avanzar(1)
+        assert despachador.revisar() == 0  # intento 1
+        self.avanzar(59)
+        assert self.n.envios_pendientes(self.reloj[0]) == []  # aún no le toca (espera 60 s)
+        self.avanzar(1)
+        despachador.revisar()  # intento 2
+        self.avanzar(119)
+        assert self.n.envios_pendientes(self.reloj[0]) == []  # ahora espera 120 s
+        self.avanzar(1)
+        (envio,) = self.n.envios_pendientes(self.reloj[0])
+        assert envio.intentos == 2
+        despachador.revisar()  # intento 3: FALLIDA
+        assert self.n.envios_pendientes(self.reloj[0] + timedelta(days=1)) == []
+
+        (contador,) = self.n.listar(self.u["contador"])
+        assert contador.correo is EstadoEnvio.FALLIDA and contador.atendida_en is None  # sigue en la bandeja
+        (aviso,) = [v for v in self.n.listar(self.u["admin"]) if v.tipo is T.CORREO_NO_ENVIADO]
+        assert "contador@empresa.co" in aviso.mensaje and "SMTP caído" in aviso.mensaje
+        assert aviso.datos["intentos"] == 3 and aviso.se_atiende_a_mano
+        assert aviso.correo is None  # el aviso de un correo fallido no se envía por correo
+
+    def test_una_tecnica_al_admin_con_correo(self):
+        self.n.registrar(causa())
+        (pendiente,) = self.n.envios_pendientes(self.reloj[0] + timedelta(minutes=1))
+        assert pendiente.destinatario == "admin@empresa.co"
 

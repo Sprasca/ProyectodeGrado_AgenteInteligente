@@ -14,8 +14,10 @@ from ...domain.enums import Rol
 from ...domain.errors import UsuarioDuplicadoError, UsuarioInvalidoError, UsuarioNoEncontradoError
 from ...domain.usuarios import (
     Usuario,
+    normalizar_email,
     normalizar_nombre_usuario,
     validar_cambio_de_administrador,
+    validar_email,
     validar_nombre_completo,
     validar_usuario_nuevo,
 )
@@ -27,7 +29,9 @@ _VIOLACION_UNICA = "23505"
 
 
 class RepositorioUsuarios(Protocol):
-    def crear(self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol) -> Usuario:
+    def crear(
+        self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol, email: str | None = None
+    ) -> Usuario:
         """UsuarioInvalidoError con datos inválidos; UsuarioDuplicadoError si el nombre ya existe."""
         ...
 
@@ -42,8 +46,12 @@ class RepositorioUsuarios(Protocol):
         rol: Rol | None = None,
         activo: bool | None = None,
         nombre_completo: str | None = None,
+        email: str | None = None,
     ) -> Usuario:
-        """Cambia rol, estado o nombre. UltimoAdministradorError si dejaría el sistema sin ADMIN activo."""
+        """
+        Cambia rol, estado, nombre o correo (email "" lo quita). UltimoAdministradorError si dejaría el sistema
+        sin ADMIN activo.
+        """
         ...
 
     def autenticar(self, nombre_usuario: str, contrasena: str) -> Usuario | None:
@@ -59,6 +67,7 @@ def _a_usuario(fila: UsuarioModel) -> Usuario:
         rol=Rol(fila.rol),
         activo=fila.activo,
         creado_en=fila.creado_en,
+        email=fila.email,
     )
 
 
@@ -77,8 +86,10 @@ class RepositorioUsuariosSQL:
                 "(docker compose up -d db) y que DATABASE_URL sea correcta."
             ) from exc
 
-    def crear(self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol) -> Usuario:
-        if errores := validar_usuario_nuevo(nombre_usuario, nombre_completo, contrasena):
+    def crear(
+        self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol, email: str | None = None
+    ) -> Usuario:
+        if errores := validar_usuario_nuevo(nombre_usuario, nombre_completo, contrasena) + validar_email(email):
             raise UsuarioInvalidoError(errores)
         nombre = normalizar_nombre_usuario(nombre_usuario)
         duplicado = UsuarioDuplicadoError(f"Ya existe el usuario {nombre}.")
@@ -92,6 +103,7 @@ class RepositorioUsuariosSQL:
                     hash_contrasena=cifrar(contrasena),
                     rol=Rol(rol).value,
                     activo=True,
+                    email=normalizar_email(email),
                 )
                 sesion.add(fila)
                 sesion.flush()
@@ -118,8 +130,11 @@ class RepositorioUsuariosSQL:
         rol: Rol | None = None,
         activo: bool | None = None,
         nombre_completo: str | None = None,
+        email: str | None = None,
     ) -> Usuario:
         if nombre_completo is not None and (errores := validar_nombre_completo(nombre_completo)):
+            raise UsuarioInvalidoError(errores)
+        if errores := validar_email(email):
             raise UsuarioInvalidoError(errores)
         with self._transaccion() as sesion:
             fila = sesion.get(UsuarioModel, id_usuario, with_for_update=True)
@@ -141,6 +156,8 @@ class RepositorioUsuariosSQL:
             fila.activo = nuevo_activo
             if nombre_completo is not None:
                 fila.nombre_completo = nombre_completo.strip()
+            if email is not None:
+                fila.email = normalizar_email(email)
             sesion.flush()
             return _a_usuario(fila)
 

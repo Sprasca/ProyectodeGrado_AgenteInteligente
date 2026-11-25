@@ -74,6 +74,29 @@ class Settings:
             obtener("RECEPCION_ESPERA_ESTABILIDAD", "1"), "RECEPCION_ESPERA_ESTABILIDAD"
         )
 
+        # Notificaciones por correo (RF04), canal OPCIONAL: solo con SMTP_HOST y SMTP_REMITENTE. Sin ellas,
+        # solo la bandeja de la aplicación, sin errores.
+        self.smtp_host = obtener("SMTP_HOST", "").strip()
+        puerto = obtener("SMTP_PUERTO", "587").strip()
+        if not puerto.isdigit() or not 0 < int(puerto) < 65536:
+            raise ValueError(f"SMTP_PUERTO debe ser un número de puerto, no {puerto!r}.")
+        self.smtp_puerto = int(puerto)
+        self.smtp_usuario = obtener("SMTP_USUARIO", "").strip()
+        self.smtp_contrasena = obtener("SMTP_CONTRASENA", "")
+        self.smtp_remitente = obtener("SMTP_REMITENTE", "").strip()
+        self.smtp_seguridad = obtener("SMTP_SEGURIDAD", "starttls").strip().lower()
+        if self.smtp_seguridad not in ("starttls", "ssl", "ninguna"):
+            raise ValueError(f"SMTP_SEGURIDAD debe ser starttls, ssl o ninguna, no {self.smtp_seguridad!r}.")
+        intentos = obtener("CORREO_INTENTOS", "3").strip()
+        if not intentos.isdigit() or int(intentos) <= 0:
+            raise ValueError(f"CORREO_INTENTOS debe ser un número entero positivo, no {intentos!r}.")
+        self.correo_intentos = int(intentos)
+        self.correo_espera_inicial = _segundos(obtener("CORREO_ESPERA_INICIAL", "60"), "CORREO_ESPERA_INICIAL")
+
+    @property
+    def correo_activo(self) -> bool:
+        return bool(self.smtp_host and self.smtp_remitente)
+
     @property
     def tamano_maximo_documento(self) -> int:
         """En bytes."""

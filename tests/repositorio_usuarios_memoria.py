@@ -8,8 +8,10 @@ from agente.domain.enums import Rol
 from agente.domain.errors import UsuarioDuplicadoError, UsuarioInvalidoError, UsuarioNoEncontradoError
 from agente.domain.usuarios import (
     Usuario,
+    normalizar_email,
     normalizar_nombre_usuario,
     validar_cambio_de_administrador,
+    validar_email,
     validar_nombre_completo,
     validar_usuario_nuevo,
 )
@@ -22,13 +24,17 @@ class RepositorioUsuariosMemoria:
         self._hashes: dict[int, str] = {}
         self._ids = count(1)
 
-    def crear(self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol) -> Usuario:
-        if errores := validar_usuario_nuevo(nombre_usuario, nombre_completo, contrasena):
+    def crear(
+        self, nombre_usuario: str, nombre_completo: str, contrasena: str, rol: Rol, email: str | None = None
+    ) -> Usuario:
+        if errores := validar_usuario_nuevo(nombre_usuario, nombre_completo, contrasena) + validar_email(email):
             raise UsuarioInvalidoError(errores)
         nombre = normalizar_nombre_usuario(nombre_usuario)
         if any(u.nombre_usuario == nombre for u in self._usuarios.values()):
             raise UsuarioDuplicadoError(f"Ya existe el usuario {nombre}.")
-        usuario = Usuario(next(self._ids), nombre, nombre_completo.strip(), Rol(rol), True, datetime.now(UTC))
+        usuario = Usuario(
+            next(self._ids), nombre, nombre_completo.strip(), Rol(rol), True, datetime.now(UTC), normalizar_email(email)
+        )
         self._usuarios[usuario.id] = usuario
         self._hashes[usuario.id] = cifrar(contrasena)
         return usuario
@@ -46,8 +52,11 @@ class RepositorioUsuariosMemoria:
         rol: Rol | None = None,
         activo: bool | None = None,
         nombre_completo: str | None = None,
+        email: str | None = None,
     ) -> Usuario:
         if nombre_completo is not None and (errores := validar_nombre_completo(nombre_completo)):
+            raise UsuarioInvalidoError(errores)
+        if errores := validar_email(email):
             raise UsuarioInvalidoError(errores)
         actual = self._usuarios.get(id_usuario)
         if actual is None:
@@ -63,6 +72,7 @@ class RepositorioUsuariosMemoria:
             rol=nuevo_rol,
             activo=nuevo_activo,
             nombre_completo=nombre_completo.strip() if nombre_completo is not None else actual.nombre_completo,
+            email=normalizar_email(email) if email is not None else actual.email,
         )
         self._usuarios[id_usuario] = nuevo
         return nuevo

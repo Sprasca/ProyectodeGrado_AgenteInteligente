@@ -15,7 +15,7 @@ def test_listar_usuarios_sin_hash(entorno_api):
     usuarios = r.json()
     assert [u["nombre_usuario"] for u in usuarios] == ["contadora", "auxiliar", "administrador"]
     for u in usuarios:
-        assert set(u) == {"id", "nombre_usuario", "nombre_completo", "rol", "activo", "creado_en"}
+        assert set(u) == {"id", "nombre_usuario", "nombre_completo", "rol", "activo", "creado_en", "email"}
     assert CONTRASENA not in r.text and "argon2" not in r.text
 
 
@@ -104,3 +104,23 @@ def test_actualizar_usuario_inexistente_404(entorno_api):
 @pytest.mark.parametrize("cuerpo", [{}, {"contrasena": "nueva-clave-1"}, {"rol": "JEFE"}])
 def test_actualizar_sin_cambios_validos_422(entorno_api, cuerpo):
     assert entorno_api.cliente.put("/usuarios/2", json=cuerpo, headers=ADMIN).status_code == 422
+
+
+def test_crear_y_cambiar_el_correo_de_un_usuario(entorno_api):
+    nuevo = {
+        "nombre_usuario": "conta2",
+        "nombre_completo": "Contadora Dos",
+        "contrasena": "clave-segura-1",
+        "rol": "CONTADOR",
+        "email": " Conta2@Empresa.CO ",
+    }
+    creado = entorno_api.cliente.post("/usuarios", json=nuevo, headers=ADMIN)
+    assert creado.status_code == 201 and creado.json()["email"] == "conta2@empresa.co"
+    ruta = f"/usuarios/{creado.json()['id']}"
+    assert entorno_api.cliente.put(ruta, json={"email": "otra@empresa.co"}, headers=ADMIN).json()["email"] == (
+        "otra@empresa.co"
+    )
+    assert entorno_api.cliente.put(ruta, json={"email": ""}, headers=ADMIN).json()["email"] is None
+    invalido = entorno_api.cliente.put(ruta, json={"email": "no-es-un-correo"}, headers=ADMIN)
+    assert invalido.status_code == 422 and "no es una dirección válida" in invalido.json()["detail"]
+

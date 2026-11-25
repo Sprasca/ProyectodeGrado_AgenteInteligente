@@ -112,6 +112,47 @@ class Notificacion:
         return not ESPECIFICACIONES[self.tipo].se_resuelve_sola
 
 
+TITULOS: dict[TipoNotificacion, str] = {
+    TipoNotificacion.TRANSACCION_EN_ALERTA: "Transacción en alerta",
+    TipoNotificacion.CONSOLIDACION_BLOQUEADA: "Consolidación bloqueada por alertas",
+    TipoNotificacion.REPORTE_DISPONIBLE: "Reporte disponible para verificación",
+    TipoNotificacion.FACTURA_DUPLICADA: "Factura enviada dos veces",
+    TipoNotificacion.DESCUADRE: "Alerta técnica: descuadre de débitos y créditos",
+    TipoNotificacion.EXPORTACION_FALLIDA: "Alerta técnica: exportación fallida",
+    TipoNotificacion.JORNADA_SIN_CIERRE: "Alerta técnica: jornada sin reporte de cierre",
+    TipoNotificacion.ARCHIVO_NO_RECIBIDO: "Alerta técnica: archivo no recibido",
+    TipoNotificacion.DIRECTORIO_NO_DISPONIBLE: "Alerta técnica: directorio de entrada no disponible",
+    TipoNotificacion.ERROR_RECEPCION: "Alerta técnica: error al recibir un archivo",
+    TipoNotificacion.CORREO_NO_ENVIADO: "Alerta técnica: correo no enviado",
+}
+
+
+@dataclass(frozen=True)
+class EnvioPendiente:
+    """Un correo por enviar: la notificación de un destinatario con correo."""
+
+    id: int
+    notificacion_id: int
+    usuario_id: int
+    destinatario: str
+    tipo: TipoNotificacion
+    mensaje: str
+    intentos: int
+
+    @property
+    def asunto(self) -> str:
+        return f"[Agente PUC] {TITULOS[self.tipo]}"
+
+    @property
+    def cuerpo(self) -> str:
+        return f"{self.mensaje}\n\nLa notificación está en su bandeja del Agente PUC (GET /notificaciones)."
+
+
+def espera_del_reintento(intentos: int, espera_inicial: float) -> float:
+    """Espera creciente antes del siguiente intento: inicial, el doble, el cuádruple..."""
+    return espera_inicial * 2 ** max(intentos - 1, 0)
+
+
 def clave_jornada(fecha: date) -> str:
     return f"jornada:{fecha.isoformat()}"
 
@@ -284,6 +325,22 @@ def causa_error_recepcion(archivo: str, error: str, fecha: str) -> Causa:
     mensaje = f"ALERTA TÉCNICA: error inesperado al recibir el archivo {archivo}: {error}"
     datos = {"archivo": archivo, "error": error, "fecha": fecha}
     return Causa(TipoNotificacion.ERROR_RECEPCION, f"recepcion:{archivo}:{fecha}", mensaje, datos)
+
+
+def causa_correo_no_enviado(envio: EnvioPendiente, intentos: int, error: str) -> Causa:
+    """RF04 anomalía 2: la notificación sigue en la bandeja del destinatario; se avisa al ADMIN (sin correo)."""
+    mensaje = (
+        f"ALERTA TÉCNICA: no se pudo enviar por correo a {envio.destinatario} la notificación {envio.notificacion_id} "
+        f"({TITULOS[envio.tipo]}) tras {intentos} intento(s): {error}. Sigue visible en la bandeja del destinatario."
+    )
+    datos = {
+        "notificacion_id": envio.notificacion_id,
+        "usuario_id": envio.usuario_id,
+        "destinatario": envio.destinatario,
+        "intentos": intentos,
+        "error": error,
+    }
+    return Causa(TipoNotificacion.CORREO_NO_ENVIADO, f"envio:{envio.id}", mensaje, datos)
 
 
 def causa_jornada_sin_cierre(jornada: date, mensaje: str, datos: dict[str, Any]) -> Causa:

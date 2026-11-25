@@ -21,6 +21,7 @@ import signal
 import threading
 
 from agente.application.cierre import cierre_por_defecto
+from agente.application.notificaciones import despachador_por_defecto
 from agente.application.recepcion import ConfiguracionRecepcion, ReceptorFacturas, receptor_por_defecto
 from agente.config import get_settings
 from agente.infrastructure.recepcion.vigilante import VigilanteEntrada
@@ -62,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
             "Cierre diario programado a la HORA_CIERRE guardada en la base (hora de Colombia)."
         )
         tareas.append(cierre.revisar)
+    settings = get_settings()
+    if settings.correo_activo:
+        tareas.append(despachador_por_defecto(settings).revisar)
+        logging.getLogger("agente.notificaciones").info(
+            "Notificaciones por correo activas (SMTP %s:%s).", settings.smtp_host, settings.smtp_puerto
+        )
     vigilante = VigilanteEntrada(
         receptor, intervalo=args.intervalo, tareas=tareas, notificaciones=notificaciones_por_defecto()
     )
