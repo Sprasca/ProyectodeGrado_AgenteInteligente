@@ -27,6 +27,9 @@ class Permiso(StrEnum):
     EXPORTAR_REPORTES = "EXPORTAR_REPORTES"  # autorizar y exportar en un solo paso (RF07)
     ANULAR_REPORTES = "ANULAR_REPORTES"  # anular un reporte CONSOLIDADO (ampliación del manual)
     CONFIGURAR_JORNADA = "CONFIGURAR_JORNADA"  # cambiar la hora de apertura y de cierre de la jornada
+    # Cada usuario solo ve y atiende sus propias notificaciones (lo decide el repositorio, no la ruta).
+    LEER_NOTIFICACIONES = "LEER_NOTIFICACIONES"
+    ATENDER_NOTIFICACIONES = "ATENDER_NOTIFICACIONES"
 
 
 PERMISOS_POR_ROL: dict[Rol, frozenset[Permiso]] = {
@@ -39,11 +42,24 @@ PERMISOS_POR_ROL: dict[Rol, frozenset[Permiso]] = {
             Permiso.EXPORTAR_REPORTES,
             Permiso.ANULAR_REPORTES,
             Permiso.CONFIGURAR_JORNADA,
+            Permiso.LEER_NOTIFICACIONES,
+            Permiso.ATENDER_NOTIFICACIONES,
         }
     ),
-    Rol.AUXILIAR: frozenset({Permiso.LEER, Permiso.CARGAR_FACTURAS, Permiso.CONSOLIDAR_REPORTES}),
-    # El ADMIN solo administra usuarios: no lee ni resuelve transacciones ni edita reglas.
-    Rol.ADMIN: frozenset({Permiso.ADMINISTRAR_USUARIOS}),
+    Rol.AUXILIAR: frozenset(
+        {
+            Permiso.LEER,
+            Permiso.CARGAR_FACTURAS,
+            Permiso.CONSOLIDAR_REPORTES,
+            Permiso.LEER_NOTIFICACIONES,
+            Permiso.ATENDER_NOTIFICACIONES,
+        }
+    ),
+    # El ADMIN administra usuarios y, como responsable de mantenimiento, recibe las notificaciones técnicas.
+    # No lee ni resuelve transacciones ni edita reglas.
+    Rol.ADMIN: frozenset(
+        {Permiso.ADMINISTRAR_USUARIOS, Permiso.LEER_NOTIFICACIONES, Permiso.ATENDER_NOTIFICACIONES}
+    ),
 }
 
 PERMISO_POR_RUTA: dict[tuple[str, str], Permiso] = {
@@ -81,6 +97,12 @@ PERMISO_POR_RUTA: dict[tuple[str, str], Permiso] = {
     ("GET", "/reportes/{id_reporte}/xml"): Permiso.LEER,
     ("POST", "/reportes/{id_reporte}/exportar"): Permiso.EXPORTAR_REPORTES,
     ("POST", "/reportes/{id_reporte}/anular"): Permiso.ANULAR_REPORTES,
+    # Notificaciones (RF04): los tres roles, cada uno con las suyas.
+    ("GET", "/notificaciones"): Permiso.LEER_NOTIFICACIONES,
+    ("GET", "/notificaciones/no-leidas/total"): Permiso.LEER_NOTIFICACIONES,
+    ("POST", "/notificaciones/leer-todas"): Permiso.LEER_NOTIFICACIONES,
+    ("POST", "/notificaciones/{id_notificacion}/leer"): Permiso.LEER_NOTIFICACIONES,
+    ("POST", "/notificaciones/{id_notificacion}/atender"): Permiso.ATENDER_NOTIFICACIONES,
     # Usuarios
     ("GET", "/usuarios"): Permiso.ADMINISTRAR_USUARIOS,
     ("POST", "/usuarios"): Permiso.ADMINISTRAR_USUARIOS,
