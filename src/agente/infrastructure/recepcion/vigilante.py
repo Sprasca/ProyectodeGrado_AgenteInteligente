@@ -16,7 +16,7 @@ import logging
 import os
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,9 +54,12 @@ class VigilanteEntrada:
         receptor: ReceptorFacturas,
         intervalo: float = 5.0,
         crear_observador: Callable[[], Any] = Observer,
+        tareas: Sequence[Callable[[], object]] = (),
     ) -> None:
+        """tareas: se ejecutan en cada revisión del supervisor (p. ej. el cierre diario programado, RF06)."""
         self.receptor = receptor
         self.intervalo = intervalo
+        self._tareas = tuple(tareas)
         self._crear_observador = crear_observador
         self._observador: Any | None = None
         self._disponible: bool | None = None  # None: todavía no se ha revisado
@@ -168,6 +171,14 @@ class VigilanteEntrada:
 
     # --- ciclo de vida -------------------------------------------------------------------------------
 
+    def ejecutar_tareas(self) -> None:
+        """Una tarea que falla deja un ERROR en el log pero no detiene la recepción."""
+        for tarea in self._tareas:
+            try:
+                tarea()
+            except Exception:
+                log.exception("Falló una tarea periódica del vigilante.")
+
     def ejecutar(self, detener: threading.Event) -> None:
         """Observa hasta que `detener` se active (p. ej. con Ctrl+C en scripts/recibir_facturas.py)."""
         self._trabajador = threading.Thread(target=self.atender_cola, kwargs={"bloquear": True}, daemon=True)
@@ -175,6 +186,7 @@ class VigilanteEntrada:
         try:
             while not detener.is_set():
                 self.revisar()
+                self.ejecutar_tareas()
                 detener.wait(self.intervalo)
         finally:
             self._detener_observador()

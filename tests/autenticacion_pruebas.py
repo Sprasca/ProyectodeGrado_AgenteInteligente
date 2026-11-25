@@ -33,6 +33,7 @@ def ruta_concreta(ruta: str) -> str:
         ruta.replace("{id_transaccion}", "6f1c0b6e-2f2a-4a6e-9d7c-1a2b3c4d5e6f")
         .replace("{codigo}", "R-4135-COMERCIO")
         .replace("{id_usuario}", "2")
+        .replace("{id_reporte}", "0b9a3c1e-4d2f-4c8a-9e7b-5f6a7b8c9d0e")
     )
 
 

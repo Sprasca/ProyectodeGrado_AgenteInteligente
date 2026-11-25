@@ -18,7 +18,9 @@ from ...domain.asiento import Partida
 from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
+from ...domain.jornada import jornada_de
 from ...domain.puc import CatalogoPUC
+from ...domain.reportes import exigir_sin_reporte
 from ...domain.resultado import ResultadoClasificacion
 from ...domain.transacciones import (
     exigir_motivo,
@@ -27,6 +29,7 @@ from ...domain.transacciones import (
     validar_correccion,
     validar_rechazo,
 )
+from .horario import horario_vigente
 from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
 
 
@@ -44,6 +47,19 @@ class CuentaNoSembradaError(Exception):
 
 _VIOLACION_UNICA = "23505"
 _VIOLACION_LLAVE_FORANEA = "23503"
+
+
+@contextmanager
+def transaccion_bd(fabrica: sessionmaker[Session]) -> Iterator[Session]:
+    """Una sesión en una transacción de base de datos; sin conexión → RepositorioNoDisponibleError."""
+    try:
+        with fabrica() as sesion, sesion.begin():
+            yield sesion
+    except (OperationalError, InterfaceError) as exc:
+        raise RepositorioNoDisponibleError(
+            "No hay conexión con PostgreSQL. Verifique que la base esté levantada "
+            "(docker compose up -d db) y que DATABASE_URL sea correcta."
+        ) from exc
 
 
 def _sqlstate(exc: IntegrityError) -> str | None:
@@ -70,6 +86,10 @@ class TransaccionRegistrada:
     asiento_propuesto: tuple[Partida, ...] | None = None
     corregido_en: datetime | None = None
     cufe: str | None = None
+    # Reporte diario vigente (RF06). Con reporte, la transacción no se puede corregir ni rechazar.
+    reporte_id: uuid.UUID | None = None
+    # Jornada a la que pertenece (fijada al recibirla con la HORA_CIERRE vigente, en hora de Colombia).
+    fecha_jornada: date | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +150,7 @@ class RepositorioTransacciones(Protocol):
     ) -> TransaccionRegistrada:
         """
         Reemplaza las partidas (validadas) y pasa a CORREGIDA_CONTADOR, con evento CORREGIDA.
+        Con reporte vigente (RF06) no se corrige: TransicionInvalidaError.
         Exige un motivo de al menos 10 caracteres (MotivoInvalidoError).
 
         Antes guarda en asiento_propuesto las partidas del agente (solo si aún no hay una
@@ -142,7 +163,8 @@ class RepositorioTransacciones(Protocol):
     ) -> TransaccionRegistrada:
         """
         EN_ALERTA o APROBADA_AUTOMATICA → RECHAZADA (estado final), con evento RECHAZADA.
-        Exige un motivo de al menos 10 caracteres. Desde otro estado: TransicionInvalidaError.
+        Exige un motivo de al menos 10 caracteres. Desde otro estado, o con reporte vigente (RF06):
+        TransicionInvalidaError.
         """
         ...
 
@@ -248,7 +270,7 @@ def estado_y_partidas(estado: EstadoTransaccion, partidas: Sequence[Partida]) ->
     return {"estado": EstadoTransaccion(estado).value, "partidas": partidas_a_json(partidas)}
 
 
-def _evento(
+def nuevo_evento(
     transaccion_id: uuid.UUID,
     tipo: TipoEvento,
     usuario_id: int | None,
@@ -281,7 +303,7 @@ def _a_evento(fila: EventoTransaccionModel) -> EventoTransaccion:
     )
 
 
-def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
+def a_registro(t: TransaccionModel) -> TransaccionRegistrada:
     return TransaccionRegistrada(
         id=t.id,
         numero_factura=t.numero_factura,
@@ -301,6 +323,8 @@ def _a_registro(t: TransaccionModel) -> TransaccionRegistrada:
         asiento_propuesto=partidas_desde_json(t.asiento_propuesto) if t.asiento_propuesto is not None else None,
         corregido_en=t.corregido_en,
         cufe=t.cufe,
+        reporte_id=t.reporte_id,
+        fecha_jornada=t.fecha_jornada,
     )
 
 
@@ -317,16 +341,8 @@ class RepositorioSQL:
         self._fabrica = fabrica_sesiones
         self._catalogo = catalogo
 
-    @contextmanager
-    def _transaccion(self) -> Iterator[Session]:
-        try:
-            with self._fabrica() as sesion, sesion.begin():
-                yield sesion
-        except (OperationalError, InterfaceError) as exc:
-            raise RepositorioNoDisponibleError(
-                "No hay conexión con PostgreSQL. Verifique que la base esté levantada "
-                "(docker compose up -d db) y que DATABASE_URL sea correcta."
-            ) from exc
+    def _transaccion(self):
+        return transaccion_bd(self._fabrica)
 
     def _cargar(self, sesion: Session, id_transaccion: uuid.UUID) -> TransaccionModel:
         t = sesion.get(
@@ -362,8 +378,12 @@ class RepositorioSQL:
                     )
                     if existente is not None:
                         raise documento_duplicado(documento.sha256, existente)
+                # La jornada se fija al recibirla, con la HORA_CIERRE vigente (hora de Colombia).
+                recibida = datetime.now(UTC)
                 t = TransaccionModel(
                     id=uuid.uuid4(),
+                    creado_en=recibida,
+                    fecha_jornada=jornada_de(recibida, horario_vigente(sesion).hora_cierre),
                     numero_factura=factura.numero,
                     fecha=factura.fecha,
                     nit_adquirente=factura.adquirente.nit,
@@ -392,8 +412,8 @@ class RepositorioSQL:
                         )
                     )
                 recepcion = datos_recepcion(resultado, documento, canal)
-                sesion.add(_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
-                sesion.add(_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
+                sesion.add(nuevo_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
+                sesion.add(nuevo_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()
                 return t.id
         except IntegrityError as exc:
@@ -435,7 +455,7 @@ class RepositorioSQL:
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None:
         with self._transaccion() as sesion:
             t = sesion.get(TransaccionModel, id_transaccion, options=[selectinload(TransaccionModel.partidas)])
-            return _a_registro(t) if t is not None else None
+            return a_registro(t) if t is not None else None
 
     def listar(self, estado: EstadoTransaccion | None = None) -> list[TransaccionRegistrada]:
         consulta = (
@@ -446,7 +466,7 @@ class RepositorioSQL:
         if estado is not None:
             consulta = consulta.where(TransaccionModel.estado == estado.value)
         with self._transaccion() as sesion:
-            return [_a_registro(t) for t in sesion.scalars(consulta)]
+            return [a_registro(t) for t in sesion.scalars(consulta)]
 
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
@@ -457,11 +477,12 @@ class RepositorioSQL:
             validar_aprobacion(EstadoTransaccion(t.estado), bool(t.partidas))
             antes = {"estado": t.estado}
             t.estado = EstadoTransaccion.APROBADA_CONTADOR.value
+            despues = {"estado": t.estado}
             sesion.add(
-                _evento(t.id, TipoEvento.APROBADA, usuario_id, motivo=motivo, antes=antes, despues={"estado": t.estado})
+                nuevo_evento(t.id, TipoEvento.APROBADA, usuario_id, motivo=motivo, antes=antes, despues=despues)
             )
             sesion.flush()
-            return _a_registro(t)
+            return a_registro(t)
 
     def corregir(
         self,
@@ -475,15 +496,16 @@ class RepositorioSQL:
         try:
             with self._transaccion() as sesion:
                 t = self._cargar(sesion, id_transaccion)
+                exigir_sin_reporte(t.reporte_id, "corregir")
                 asiento = validar_correccion(EstadoTransaccion(t.estado), partidas, self._catalogo)
-                previas = _a_registro(t)
+                previas = a_registro(t)
                 if t.asiento_propuesto is None:
                     t.asiento_propuesto = partidas_a_json(previas.partidas)
                 t.corregido_en = datetime.now(UTC)
                 t.partidas = [_partida_modelo(p) for p in asiento.partidas]
                 t.estado = EstadoTransaccion.CORREGIDA_CONTADOR.value
                 sesion.add(
-                    _evento(
+                    nuevo_evento(
                         t.id,
                         TipoEvento.CORREGIDA,
                         usuario_id,
@@ -493,7 +515,7 @@ class RepositorioSQL:
                     )
                 )
                 sesion.flush()
-                return _a_registro(t)
+                return a_registro(t)
         except IntegrityError as exc:
             self._traducir_llave_foranea(exc, partidas)
             raise
@@ -504,16 +526,17 @@ class RepositorioSQL:
         motivo = exigir_motivo(motivo, "rechazar")
         with self._transaccion() as sesion:
             t = self._cargar(sesion, id_transaccion)
+            exigir_sin_reporte(t.reporte_id, "rechazar")
             validar_rechazo(EstadoTransaccion(t.estado))
             antes = {"estado": t.estado}
             t.estado = EstadoTransaccion.RECHAZADA.value
             sesion.add(
-                _evento(
+                nuevo_evento(
                     t.id, TipoEvento.RECHAZADA, usuario_id, motivo=motivo, antes=antes, despues={"estado": t.estado}
                 )
             )
             sesion.flush()
-            return _a_registro(t)
+            return a_registro(t)
 
     def eventos(self, id_transaccion: uuid.UUID) -> list[EventoTransaccion]:
         with self._transaccion() as sesion:

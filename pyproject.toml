@@ -17,6 +17,8 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "pyjwt>=2.15.1",
     "watchdog>=7.1.1",
+    "tzdata>=2025.2",
+    "lxml>=5.3",
 ]
 
 [dependency-groups]

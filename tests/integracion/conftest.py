@@ -18,7 +18,7 @@ from agente.infrastructure.db.models import (
     ReglaClasificacionModel,
     TransaccionModel,
 )
-from agente.infrastructure.db.session import crear_sessionmaker
+from agente.infrastructure.db.session import crear_sessionmaker, fabrica_compartida
 
 
 @pytest.fixture(scope="session")
@@ -120,3 +120,53 @@ def como_bd(usuarios_bd):
     from agente.api.autenticacion import crear_token
 
     return lambda rol: {"Authorization": f"Bearer {crear_token(usuarios_bd[rol])}"}
+
+
+@pytest.fixture
+def base_temporal(fabrica_bd, monkeypatch):
+    """
+    Una base vacía en el mismo servidor; DATABASE_URL apunta a ella durante la prueba y se elimina al final.
+    La base de DATABASE_URL (con los datos de quien ejecuta las pruebas) no se toca.
+    """
+    from sqlalchemy import create_engine
+
+    url = make_url(get_settings().database_url)
+    nombre = f"agente_prueba_{uuid.uuid4().hex[:12]}"
+    administracion = create_engine(url, isolation_level="AUTOCOMMIT")
+    with administracion.connect() as conexion:
+        conexion.execute(text(f'CREATE DATABASE "{nombre}"'))
+    temporal = url.set(database=nombre)
+    monkeypatch.setenv("DATABASE_URL", temporal.render_as_string(hide_password=False))
+    get_settings.cache_clear()
+    # Si algo abre la fábrica compartida durante la prueba, que no quede apuntando a la base temporal.
+    fabrica_compartida.cache_clear()
+    motor = create_engine(temporal)
+    try:
+        yield motor
+    finally:
+        motor.dispose()
+        get_settings.cache_clear()
+        fabrica_compartida.cache_clear()
+        with administracion.connect() as conexion:
+            conexion.execute(text(f'DROP DATABASE IF EXISTS "{nombre}" WITH (FORCE)'))
+        administracion.dispose()
+
+
+@pytest.fixture
+def bd_sembrada(base_temporal):
+    """
+    Base temporal migrada a head y sembrada con data/puc: para las pruebas que consolidan reportes, que toman
+    TODAS las transacciones aprobadas sin reporte y por eso no pueden correr sobre la base de quien las ejecuta.
+    Devuelve una fábrica de sesiones.
+    """
+    from alembic import command
+    from alembic_pruebas import configuracion_alembic
+
+    from agente.infrastructure.db.repositorio import sembrar_desde_csv
+
+    command.upgrade(configuracion_alembic(), "head")
+    fabrica = crear_sessionmaker(get_settings().database_url, connect_timeout=3)
+    sembrar_desde_csv(get_settings().directorio_puc, fabrica_sesiones=fabrica)
+    yield fabrica
+    fabrica.kw["bind"].dispose()
+

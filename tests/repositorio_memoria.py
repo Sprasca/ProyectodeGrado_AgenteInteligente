@@ -1,16 +1,20 @@
 """Repositorio de transacciones en memoria. SOLO para pruebas; misma interfaz que RepositorioSQL."""
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import count
+
+from repositorio_jornada_memoria import RepositorioHorarioMemoria
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
 from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
 from agente.domain.errors import TransaccionNoEncontradaError
+from agente.domain.jornada import jornada_de
 from agente.domain.puc import CatalogoPUC
+from agente.domain.reportes import exigir_sin_reporte
 from agente.domain.resultado import ResultadoClasificacion
 from agente.domain.transacciones import (
     exigir_motivo,
@@ -34,8 +38,20 @@ from agente.infrastructure.db.transacciones import (
 
 
 class RepositorioMemoria:
-    def __init__(self, catalogo: CatalogoPUC, cuentas_en_bd: set[str] | None = None) -> None:
-        """cuentas_en_bd simula la tabla cuenta_puc (llave foránea); por defecto, las del catálogo."""
+    def __init__(
+        self,
+        catalogo: CatalogoPUC,
+        cuentas_en_bd: set[str] | None = None,
+        horario: RepositorioHorarioMemoria | None = None,
+        reloj: Callable[[], datetime] | None = None,
+    ) -> None:
+        """
+        cuentas_en_bd simula la tabla cuenta_puc (llave foránea); por defecto, las del catálogo.
+        horario: el de la jornada (comparte la tabla horario_jornada con la API). reloj: el instante de
+        recepción de cada factura (por defecto, ahora), para probar a qué jornada pertenece.
+        """
+        self.horario = horario if horario is not None else RepositorioHorarioMemoria()
+        self.reloj = reloj or (lambda: datetime.now(UTC))
         self._catalogo = catalogo
         self._cuentas_en_bd = cuentas_en_bd if cuentas_en_bd is not None else {c.codigo for c in catalogo.cuentas}
         self._por_id: dict[uuid.UUID, TransaccionRegistrada] = {}
@@ -76,6 +92,7 @@ class RepositorioMemoria:
                 raise documento_duplicado(documento.sha256, existente)
         if resultado.asiento is not None:
             self._verificar_llave_foranea(resultado.asiento.partidas)
+        recibida = self.reloj()
         registro = TransaccionRegistrada(
             id=uuid.uuid4(),
             numero_factura=factura.numero,
@@ -88,8 +105,9 @@ class RepositorioMemoria:
             motivos_alerta=tuple(resultado.motivos_alerta),
             detalle_lineas=tuple(detalle_lineas(resultado)),
             partidas=resultado.asiento.partidas if resultado.asiento is not None else (),
-            creado_en=datetime.now(UTC),
+            creado_en=recibida,
             cufe=factura.cufe,
+            fecha_jornada=jornada_de(recibida, self.horario.vigente().hora_cierre),
         )
         self._por_id[registro.id] = registro
         if documento is not None:
@@ -138,6 +156,7 @@ class RepositorioMemoria:
     ) -> TransaccionRegistrada:
         motivo = exigir_motivo(motivo, "corregir")
         t = self._cargar(id_transaccion)
+        exigir_sin_reporte(t.reporte_id, "corregir")
         asiento = validar_correccion(t.estado, partidas, self._catalogo)
         self._verificar_llave_foranea(asiento.partidas)
         self._por_id[t.id] = replace(
@@ -162,6 +181,7 @@ class RepositorioMemoria:
     ) -> TransaccionRegistrada:
         motivo = exigir_motivo(motivo, "rechazar")
         t = self._cargar(id_transaccion)
+        exigir_sin_reporte(t.reporte_id, "rechazar")
         validar_rechazo(t.estado)
         self._por_id[t.id] = replace(t, estado=EstadoTransaccion.RECHAZADA)
         self._registrar(

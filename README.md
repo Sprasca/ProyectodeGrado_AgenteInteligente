@@ -4,7 +4,7 @@ Proyecto de grado, Ingeniería de Sistemas, Universidad de Cartagena.
 
 El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la interpreta, propone el asiento contable bajo el PUC del Grupo 2 y deja en alerta lo que no clasifica con suficiente confianza.
 
-## Estado: Fase 3 (recepción automática, RF01) En Pruebas
+## Estado: Fase 4 (reporte diario y exportación, RF06 y RF07) En Pruebas
 
 | Componente | Estado |
 |---|---|
@@ -21,7 +21,7 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | Caso de uso `clasificar_hibrido` (reglas + Groq para líneas sin regla) | Listo, con pruebas |
 | API HTTP (FastAPI) | Listo, con pruebas |
 | NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba |
-| Reporte diario, exportación al ERP | Sprint 3 |
+| Reporte diario: horario de la jornada, reportes parciales y de cierre, cierre programado (RF06), exportación a XML validado con XSD (RF07), anulación | Listo, con pruebas unitarias y de integración |
 
 > El catálogo de `data/puc/` es una **semilla** de cuentas de ingresos por ventas. Las facturas de `tests/fixtures/` son sintéticas, no documentos reales. La carpeta de facturas almacena documentos sintéticos y reales que se usan como ejemplo para las pruebas.
 
@@ -36,7 +36,7 @@ cp .env.example .env
 uv run python -c "import secrets; print(secrets.token_urlsafe(48))"
 uv sync
 docker compose up -d db
-uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0008)
+uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0010)
 uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira reglas obsoletas
 ```
 
@@ -139,6 +139,10 @@ Están definidos en un solo lugar: [src/agente/api/permisos.py](src/agente/api/p
 | Consultar transacciones, eventos, documentos, cuentas y reglas (todos los `GET` de esas rutas) | ✓ | ✓ | |
 | Aprobar, corregir y rechazar transacciones | ✓ | | |
 | Crear cuentas; crear, editar, activar y desactivar reglas | ✓ | | |
+| Consolidar reportes parciales y de cierre (`POST /reportes/consolidar`) | ✓ | ✓ | |
+| Consultar reportes, la jornada y el horario, y descargar el XML exportado (todos los `GET /reportes...`) | ✓ | ✓ | |
+| Exportar (autorizar) y anular reportes | ✓ | | |
+| Cambiar el horario de la jornada (`PUT /reportes/horario`) | ✓ | | |
 | Usuarios: `GET`, `POST` y `PUT /usuarios` (crear, desactivar, cambiar rol) | | | ✓ |
 
 ## API
@@ -159,7 +163,7 @@ Documentación interactiva en http://127.0.0.1:8000/docs.
 | `POST /transacciones/{id}/rechazar` | `EN_ALERTA` o `APROBADA_AUTOMATICA` → `RECHAZADA` (estado final): `{"motivo": "..."}` |
 | `GET /usuarios`, `POST /usuarios`, `PUT /usuarios/{id}` | Administración de usuarios (ADMIN). `PUT` acepta `rol`, `activo` y `nombre_completo` |
 
-Corregir y rechazar exigen un **motivo de al menos 10 caracteres** (si no, **422**). Una transacción `RECHAZADA` no admite más acciones (**409**).
+Corregir y rechazar exigen un **motivo de al menos 10 caracteres** (si no, **422**). Una transacción `RECHAZADA` no admite más acciones (**409**). Una transacción con **reporte vigente** (`reporte_id`) no se puede corregir ni rechazar (**409**); si su reporte está `CONSOLIDADO`, se libera anulándolo.
 
 ### Trazabilidad
 Cada acción sobre una transacción deja un evento en `evento_transaccion`, en la **misma transacción de base de datos** que el cambio (o queda todo, o no queda nada):
@@ -169,8 +173,64 @@ Cada acción sobre una transacción deja un evento en `evento_transaccion`, en l
 | `RECIBIDA` | Al guardar la factura (canal `api` o `carpeta`; nombre, tamaño y SHA-256 del archivo) | Quien la cargó; ninguno en la recepción automática |
 | `CLASIFICADA` | Al guardar (estado, confianza, reglas y partidas propuestas) | Ninguno: automático |
 | `APROBADA`, `CORREGIDA`, `RECHAZADA` | Acciones del contador, con el motivo y el antes/después | El contador |
+| `CONSOLIDADA` | Al incluirla en un reporte diario (id, tipo y número del reporte y fecha de la jornada) | Quien consolidó; ninguno en el cierre programado |
+| `EXPORTADA` | Al exportar su reporte (además, archivo y SHA-256) | El contador que exportó |
+| `LIBERADA` | Al anular su reporte, con el motivo | El contador |
 
 Los eventos y el documento original no se borran en cascada con la transacción. Los cambios de reglas quedan en `historial_regla` con el usuario autenticado.
+
+### Reporte de transacciones diarias (RF06 y RF07)
+| Método y ruta | Descripción |
+|---|---|
+| `POST /reportes/consolidar` | Crea un reporte (**201**). Cuerpo opcional `{"tipo": "PARCIAL" \| "CIERRE", "fecha_jornada": "AAAA-MM-DD"}`; sin cuerpo, un `PARCIAL` de la jornada en curso. Alertas en la jornada → **409** con `pendientes`; jornada ya cerrada, límite de parciales, cierre antes de la hora de cierre o nada que consolidar → **409**; débitos ≠ créditos → **500** |
+| `GET /reportes/jornada?fecha=AAAA-MM-DD` | Estado de la jornada (por defecto, la en curso): horario, corte del cierre, reportes y parciales vigentes, si tiene cierre, alertas pendientes, transacciones aprobadas sin reporte, `puede_consolidar_parcial`, `puede_cerrar`, `puede_consolidar` y los `motivos` cuando no. Para habilitar los botones de la interfaz |
+| `GET /reportes/horario` | Horario vigente (`hora_apertura`, `hora_cierre`, quién lo fijó y cuándo) |
+| `GET /reportes/horario/historial` | Todos los horarios, del más reciente al más antiguo |
+| `PUT /reportes/horario` | Solo el contador: `{"hora_apertura": "08:00", "hora_cierre": "18:00"}`. Apertura no anterior al cierre o formato distinto de `HH:MM` → **422**; un cambio que movería la jornada en curso → **409** |
+| `GET /reportes?estado=CONSOLIDADO&fecha_jornada=AAAA-MM-DD` | Lista los reportes, del más reciente al más antiguo, con filtros opcionales |
+| `GET /reportes/{id}` | Tipo, número en la jornada, totales por código registrado (`movimientos`), subtotales por cuenta de 4 dígitos, número de transacciones, valor total y la lista de transacciones |
+| `GET /reportes/{id}/eventos` | Cambios de estado: quién (`null` si fue el cierre programado), cuándo y por qué |
+| `POST /reportes/{id}/exportar` | El contador autoriza y en el mismo paso se genera el XML, se valida contra el XSD y el reporte pasa a `EXPORTADO`, con autor, fecha y hora y SHA-256. Ya exportado o anulado → **409**; falla la generación o la validación → **500** y el reporte sigue `CONSOLIDADO` |
+| `GET /reportes/{id}/xml` | Descarga el XML exportado para cargarlo en el ERP (SHA-256 en `X-Contenido-SHA256`); sin exportar → **404** |
+| `POST /reportes/{id}/anular` | `CONSOLIDADO` → `ANULADO` con `{"motivo": "..."}` (mínimo 10 caracteres). Libera sus transacciones. Un `EXPORTADO` nunca se anula (**409**) |
+
+**Horario y jornada.** El contador define la hora de apertura y la de cierre; se guardan en la base (`horario_jornada`, inicial 08:00 a 18:00), con quién las cambió y cuándo. Todo va en hora de Colombia (`America/Bogota`). Una transacción pertenece a la jornada del día si se recibe **antes** de la `HORA_CIERRE` de ese día; a esa hora o después, a la del día siguiente. La jornada se guarda en cada transacción al recibirla (`fecha_jornada`): cambiar el horario no mueve lo ya recibido, y un cambio que movería la jornada en curso se rechaza. La hora de apertura es informativa: no cambia a qué jornada pertenece nada.
+
+**Tipos de reporte y límite de 5 por jornada.**
+- **Parcial**: a mano (auxiliar o contador), durante el día. Toma las transacciones aprobadas sin reporte de la jornada en curso recibidas hasta ese momento. Nunca está vacío.
+- **Cierre**: corte siempre a la `HORA_CIERRE` de su jornada, aunque se genere más tarde; lo recibido después de esa hora no entra porque pertenece a la jornada siguiente. Solo se hace cuando esa hora ya pasó. Puede quedar sin transacciones propias si los parciales ya las tomaron todas (así queda cerrada la jornada); si la jornada no tiene transacciones aprobadas ni parciales, no hay nada que cerrar.
+- Como máximo **4 parciales vigentes** por jornada; el quinto cupo es del **cierre**, de modo que el límite nunca impide cerrar el día. Solo hay **un cierre vigente** por jornada y, después de él, la jornada no admite más reportes salvo que ese cierre se anule. Los `ANULADOS` no cuentan.
+- Cada reporte tiene un `tipo` y un `numero` consecutivo dentro de la jornada (cuenta también los anulados y no se reutiliza).
+- La base impone el límite y el cierre único, no solo el código: cada reporte ocupa un `cupo` (1 a 4 los parciales, 5 el cierre) que no se repite entre los vigentes de una jornada (índices únicos parciales `uq_reporte_diario_cupo_vigente` y `uq_reporte_diario_cierre_vigente`).
+- Un parcial no se anula mientras la jornada tenga un cierre vigente: anule primero el cierre (si no se ha exportado).
+
+**Qué entra en el reporte.** Las transacciones `APROBADA_AUTOMATICA`, `APROBADA_CONTADOR` y `CORREGIDA_CONTADOR` de la jornada que aún no tengan reporte; las `RECHAZADAS` no entran. Una transacción `EN_ALERTA` de la jornada **bloquea** cualquier consolidación de esa jornada (**409** con el número pendiente). Cada transacción queda ligada a un solo reporte vigente.
+
+**Agrupación.** Por el código registrado en cada partida (cuenta de 4 dígitos o subcuenta de 6), con subtotales por cuenta de 4 dígitos. La suma de débitos debe ser igual a la de créditos; si no, la consolidación se aborta (error de integridad).
+
+**Estados.** `CONSOLIDADO` → `EXPORTADO` (final) o `CONSOLIDADO` → `ANULADO` (final). Cada cambio queda en `evento_reporte` con el usuario y la fecha y hora; el vínculo entre reporte y transacciones queda en `reporte_transaccion`, que no se borra. El XML se guarda en la base (`reporte_diario.archivo_xml`), y generarlo, validarlo y marcar el reporte como `EXPORTADO` (con los eventos) ocurre en **una sola transacción de base de datos**.
+
+**Cierre programado, sin reintentos.** `scripts/recibir_facturas.py` (el mismo proceso del vigilante) hace **un solo intento** de generar el reporte de cierre a la `HORA_CIERRE` guardada en la base, sin usuario y con corte a esa hora. Si el proceso no corría a esa hora, hace el mismo intento al arrancar, con el corte original. Si la jornada queda **sin reporte de cierre** (alertas sin resolver, descuadre u otro error), registra la alerta técnica `JORNADA_SIN_CIERRE` en la tabla `alerta_tecnica` ("la jornada no tiene reporte de cierre", con el número de alertas pendientes) y un **ERROR** en el log; no vuelve a intentar, ni al reiniciar el proceso. La alerta se registra siempre que la jornada haya recibido alguna transacción sin contar las `RECHAZADAS`, también si todas están en alerta (no hay aprobadas, pero sí trabajo pendiente para el contador); solo una jornada que no recibió ninguna queda sin cierre y sin alerta. El auxiliar o el contador generan después el cierre a mano. La Fase 5 convertirá esas filas en notificaciones (`notificada_en`). Con `--sin-cierre` no cierra, y `--una-vez` nunca cierra.
+
+**Avisos.** Hasta que exista el módulo de notificaciones (Fase 5), lo demás que el manual pide notificar queda en el log `agente.reportes`: **WARNING** con el número de alertas pendientes, **ERROR** ("ALERTA TÉCNICA") ante un descuadre o una exportación fallida, **INFO** cuando no hay nada que consolidar.
+
+#### Ampliaciones respecto al manual
+- **Reportes parciales.** El manual habla de un consolidado al cierre del día; los parciales (hasta 4 por jornada) permiten adelantar la exportación durante el día.
+- **Estado `ANULADO`.** El manual solo define Consolidado y Exportado. Anular permite corregir una transacción ya consolidada: solo se anula un `CONSOLIDADO`, con motivo obligatorio, y sus transacciones quedan libres (`reporte_id` nulo, evento `LIBERADA`). El reporte anulado conserva su lista de transacciones y sus totales.
+- **Estructura del XML.** El manual pide un XML "con la estructura que admite el sistema contable", pero no la define. Esta es una estructura **propia y versionada** (`version="1.0"`, espacio de nombres `urn:agente-inteligente:reporte-diario:1.0`), generada en [src/agente/infrastructure/erp/xml_reporte.py](src/agente/infrastructure/erp/xml_reporte.py) y descrita por el esquema [reporte_diario_v1.0.xsd](src/agente/infrastructure/erp/esquemas/reporte_diario_v1.0.xsd). El esquema vive dentro del paquete porque el sistema lo usa al exportar. Cada XML se valida contra él antes de marcar el reporte como `EXPORTADO` (con lxml, sin entidades externas ni red); si no cumple, se aplica la anomalía 4: el reporte sigue `CONSOLIDADO` y queda un ERROR en el log. Un cambio de estructura exige una versión nueva del esquema, sin modificar la 1.0:
+  - `Encabezado`: id, tipo de reporte (`PARCIAL` o `CIERRE`) y su número en la jornada, fecha de la jornada, corte, número de transacciones, valor total, total débito y crédito, moneda (COP), quién autorizó y cuándo (hora de Colombia);
+  - `Movimientos`: un movimiento por código registrado, con débito y crédito;
+  - `Subtotales`: uno por cuenta de 4 dígitos;
+  - `Detalle`: respaldo por transacción, con comprobante (número de factura), fecha, **NIT del tercero** (el adquirente de la factura), valor total y sus partidas (cuenta, descripción, débito y crédito).
+
+#### Decisiones pendientes con el contador
+- **Tercero en los totales.** Hoy los totales van por código y el NIT del tercero solo aparece en el detalle de respaldo. Falta saber si el ERP exige el tercero en cada movimiento, es decir, totales por cuenta y NIT.
+- **Agrupación.** ¿Le sirve agrupar por el código registrado con subtotales por cuenta de 4 dígitos?
+- **Cierre sin transacciones propias.** Hoy, si los parciales ya tomaron todas las transacciones, el cierre se crea vacío (0 transacciones) para marcar la jornada como cerrada, y también hay que exportarlo. Si la jornada no recibió ninguna transacción (sin contar las `RECHAZADAS`), no se crea cierre ni alerta. Confirmar ambos casos.
+- **Hora de apertura.** Hoy es solo informativa: se guarda y se muestra, pero no cambia a qué jornada pertenece una transacción ni impide consolidar antes de esa hora. Confirmar si debe tener algún efecto.
+- **Jornadas en desorden.** Cada jornada se cierra y se exporta por separado. Si una jornada anterior está bloqueada por alertas, las siguientes pueden cerrarse y exportarse antes que ella, y el ERP recibiría los reportes fuera de orden. Confirmar si el ERP lo admite o si una jornada debe esperar a que la anterior tenga cierre.
+- **Reintento del cierre.** El cierre programado no reintenta: si no pudo cerrar, el auxiliar o el contador cierran a mano. Confirmar que no necesita un segundo intento automático.
+- **Qué es RN07.** El manual la cita en RF06 pero no la define.
 
 ### Catálogo y reglas (RF09)
 El contador administra cuentas y reglas sin tocar código. Cada creación, edición, activación o desactivación de una regla queda en `historial_regla` (acción, antes, después, usuario y fecha).
@@ -196,7 +256,7 @@ Al crear o editar una regla:
 uv run pytest                    # unitarias: no requieren red, Groq ni PostgreSQL
 uv run pytest -m integracion     # integración contra PostgreSQL real (DATABASE_URL)
 ```
-Las pruebas unitarias fijan `FUENTE_CATALOGO=csv` y su propio `JWT_SECRETO`, y usan usuarios de prueba en memoria (uno por rol). Las de integración necesitan la base levantada, migrada y sembrada (ver *Puesta en marcha*); si no hay conexión se saltan con un aviso. Crean sus propios usuarios, reglas, cuentas y transacciones con códigos únicos y los borran al terminar.
+Las pruebas unitarias fijan `FUENTE_CATALOGO=csv` y su propio `JWT_SECRETO`, y usan usuarios de prueba en memoria (uno por rol). Las de integración necesitan la base levantada, migrada y sembrada (ver *Puesta en marcha*); si no hay conexión se saltan con un aviso. Crean sus propios usuarios, reglas, cuentas y transacciones con códigos únicos y los borran al terminar. Las de reportes y migraciones crean una **base temporal** en el mismo servidor (`agente_prueba_...`) y la eliminan al terminar: una consolidación toma todas las transacciones aprobadas sin reporte, así que no pueden correr sobre la base de quien las ejecuta. Por eso el usuario de `DATABASE_URL` necesita permiso para crear bases de datos.
 
 ## Integración continua
 Cada push y pull request ejecuta [.github/workflows/pruebas.yml](.github/workflows/pruebas.yml) en GitHub Actions. El job levanta un servicio PostgreSQL (`pgvector/pgvector:pg16`, usuario, contraseña y base `agente`), define `DATABASE_URL` y un `JWT_SECRETO` de prueba, y corre: `uv sync`, `uv run ruff check .`, `uv run pytest`, `uv run alembic upgrade head`, `uv run python scripts/sembrar_puc.py` y `uv run pytest -m integracion`. Un cambio en `data/puc/` que deje el catálogo inconsistente (códigos repetidos o reglas que apunten a cuentas que no son de ingreso) hace fallar el job.

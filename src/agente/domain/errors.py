@@ -94,3 +94,53 @@ class RutaNoPermitidaError(ErrorDeDominio):
 
 class DocumentoInvalidoError(ErrorDeDominio):
     """El archivo no es un XML o PDF de factura completo y legible (no se reintenta)."""
+
+
+# --- Reportes diarios (RF06, RF07) ----------------------------------------------------------------------
+
+
+class ConsolidacionBloqueadaError(ErrorDeDominio):
+    """Hay transacciones EN_ALERTA sin resolver en la jornada (RF06 1.a): no se consolida."""
+
+    def __init__(self, pendientes: int) -> None:
+        super().__init__(
+            f"No se puede consolidar: hay {pendientes} transacción(es) EN_ALERTA sin resolver en la jornada. "
+            "El contador debe resolverlas (aprobar, corregir o rechazar) antes de consolidar."
+        )
+        self.pendientes = pendientes
+
+
+class SinTransaccionesError(ErrorDeDominio):
+    """No hay transacciones aprobadas sin reporte en la jornada: no se crea un reporte vacío."""
+
+
+class ConsolidacionInconsistenteError(ErrorDeDominio):
+    """Error de integridad del sistema (RF06 3.a): débitos y créditos no cuadran o falta un asiento."""
+
+
+class ReporteNoEncontradoError(ErrorDeDominio):
+    """No existe un reporte con el id indicado."""
+
+
+class ExportacionFallidaError(ErrorDeDominio):
+    """No se pudo generar el archivo de exportación (RF07 anomalía 4): el reporte sigue CONSOLIDADO."""
+
+
+class JornadaCerradaError(TransicionInvalidaError):
+    """La jornada ya tiene un reporte de cierre vigente: no admite más reportes salvo que ese cierre se anule."""
+
+
+class LimiteDeReportesError(TransicionInvalidaError):
+    """La jornada ya tiene 4 reportes parciales vigentes; el quinto cupo es del reporte de cierre."""
+
+
+class JornadaNoTerminadaError(TransicionInvalidaError):
+    """El reporte de cierre se hace cuando ya pasó la HORA_CIERRE de esa jornada."""
+
+
+class HorarioInvalidoError(DatosInvalidosError):
+    """Horas con formato inválido o apertura que no es anterior al cierre."""
+
+
+class XmlInvalidoError(ErrorDeDominio):
+    """El XML generado no cumple el esquema XSD versionado del reporte (RF07 anomalía 4)."""

@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Esquema del XML del reporte de transacciones diarias para el ERP (RF07), versión 1.0.
+
+  El manual pide un XML "con la estructura que admite el sistema contable" pero no la define: esta es una
+  estructura propia y versionada. Cada XML se valida contra este esquema antes de marcar el reporte como
+  EXPORTADO; si no cumple, el reporte sigue CONSOLIDADO (anomalía 4). Un cambio de estructura exige una
+  versión nueva (archivo, espacio de nombres y atributo version), sin modificar esta.
+
+  Lo que XSD 1.0 no puede expresar lo verifica el sistema antes de generar el archivo: que los débitos
+  sean iguales a los créditos y que los subtotales sumen los movimientos.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:r="urn:agente-inteligente:reporte-diario:1.0"
+           targetNamespace="urn:agente-inteligente:reporte-diario:1.0"
+           elementFormDefault="qualified">
+
+  <xs:simpleType name="Uuid">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Valores en pesos, no negativos y con exactamente dos decimales. -->
+  <xs:simpleType name="Valor">
+    <xs:restriction base="xs:decimal">
+      <xs:minInclusive value="0"/>
+      <xs:totalDigits value="18"/>
+      <xs:fractionDigits value="2"/>
+      <xs:pattern value="\d+\.\d{2}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Código del PUC: cuenta de 4 dígitos o subcuenta (6) o auxiliar (8). -->
+  <xs:simpleType name="CodigoPUC">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\d{4}(\d{2}){0,2}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Cuenta">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\d{4}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TipoReporte">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="PARCIAL"/>
+      <xs:enumeration value="CIERRE"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TextoCorto">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+      <xs:maxLength value="60"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Fecha y hora con zona horaria (el sistema la escribe en hora de Colombia, -05:00). -->
+  <xs:simpleType name="FechaHoraConZona">
+    <xs:restriction base="xs:dateTime">
+      <xs:pattern value=".+(Z|[+\-]\d{2}:\d{2})"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="ReporteTransaccionesDiarias">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Encabezado">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="IdReporte" type="r:Uuid"/>
+              <xs:element name="TipoReporte" type="r:TipoReporte"/>
+              <xs:element name="NumeroReporte" type="xs:positiveInteger"/>
+              <xs:element name="FechaJornada" type="xs:date"/>
+              <xs:element name="Corte" type="r:FechaHoraConZona"/>
+              <xs:element name="NumeroTransacciones" type="xs:nonNegativeInteger"/>
+              <xs:element name="ValorTotal" type="r:Valor"/>
+              <xs:element name="TotalDebito" type="r:Valor"/>
+              <xs:element name="TotalCredito" type="r:Valor"/>
+              <xs:element name="Moneda" type="xs:string" fixed="COP"/>
+              <xs:element name="AutorizadoPor" type="xs:positiveInteger"/>
+              <xs:element name="FechaAutorizacion" type="r:FechaHoraConZona"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+
+        <!-- Un movimiento por código registrado. Vacío solo en un cierre sin transacciones propias. -->
+        <xs:element name="Movimientos">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Movimiento" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="Codigo" type="r:CodigoPUC"/>
+                    <xs:element name="Cuenta" type="r:Cuenta"/>
+                    <xs:element name="Debito" type="r:Valor"/>
+                    <xs:element name="Credito" type="r:Valor"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+          <xs:unique name="CodigoUnico">
+            <xs:selector xpath="r:Movimiento"/>
+            <xs:field xpath="r:Codigo"/>
+          </xs:unique>
+        </xs:element>
+
+        <xs:element name="Subtotales">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Subtotal" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="Cuenta" type="r:Cuenta"/>
+                    <xs:element name="Debito" type="r:Valor"/>
+                    <xs:element name="Credito" type="r:Valor"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+          <xs:unique name="CuentaUnica">
+            <xs:selector xpath="r:Subtotal"/>
+            <xs:field xpath="r:Cuenta"/>
+          </xs:unique>
+        </xs:element>
+
+        <!-- Respaldo: cada transacción con su comprobante, el NIT del tercero y sus partidas. -->
+        <xs:element name="Detalle">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Transaccion" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="Comprobante" type="r:TextoCorto"/>
+                    <xs:element name="Fecha" type="xs:date"/>
+                    <xs:element name="NitTercero" type="r:TextoCorto"/>
+                    <xs:element name="ValorTotal" type="r:Valor"/>
+                    <xs:element name="Partidas">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="Partida" maxOccurs="unbounded">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="Cuenta" type="r:CodigoPUC"/>
+                                <xs:element name="Descripcion">
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:maxLength value="200"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:element>
+                                <xs:element name="Debito" type="r:Valor"/>
+                                <xs:element name="Credito" type="r:Valor"/>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                  <xs:attribute name="id" type="r:Uuid" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+          <xs:unique name="TransaccionUnica">
+            <xs:selector xpath="r:Transaccion"/>
+            <xs:field xpath="@id"/>
+          </xs:unique>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string" fixed="1.0" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
