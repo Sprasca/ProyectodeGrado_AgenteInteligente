@@ -12,6 +12,16 @@ from agente.infrastructure.db.models import (
 )
 
 
+def borrar_notificaciones(sesion, condicion) -> None:
+    """Borra las notificaciones que cumplen la condición, con sus copias y sus envíos por correo."""
+    ids = list(sesion.scalars(select(NotificacionModel.id).where(condicion)))
+    if not ids:
+        return
+    sesion.execute(delete(EnvioCorreoModel).where(EnvioCorreoModel.notificacion_id.in_(ids)))
+    sesion.execute(delete(NotificacionUsuarioModel).where(NotificacionUsuarioModel.notificacion_id.in_(ids)))
+    sesion.execute(delete(NotificacionModel).where(NotificacionModel.id.in_(ids)))
+
+
 def borrar_transacciones(sesion, condicion) -> None:
     """
     Borra las transacciones que cumplen la condición y, ANTES, su evidencia (notificaciones, eventos y

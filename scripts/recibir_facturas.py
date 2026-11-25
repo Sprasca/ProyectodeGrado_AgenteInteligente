@@ -30,6 +30,13 @@ def construir_receptor(usar_nlp: bool = True) -> ReceptorFacturas:
     return receptor_por_defecto(ConfiguracionRecepcion.desde_settings(get_settings()), usar_nlp)
 
 
+def notificaciones_por_defecto():
+    from agente.infrastructure.db.notificaciones import RepositorioNotificacionesSQL
+    from agente.infrastructure.db.session import fabrica_compartida
+
+    return RepositorioNotificacionesSQL(fabrica_compartida())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Recepción automática de facturas desde DIRECTORIO_ENTRADA.")
     parser.add_argument("--una-vez", action="store_true", help="procesa los archivos pendientes y termina")
@@ -55,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
             "Cierre diario programado a la HORA_CIERRE guardada en la base (hora de Colombia)."
         )
         tareas.append(cierre.revisar)
-    vigilante = VigilanteEntrada(receptor, intervalo=args.intervalo, tareas=tareas)
+    vigilante = VigilanteEntrada(
+        receptor, intervalo=args.intervalo, tareas=tareas, notificaciones=notificaciones_por_defecto()
+    )
     detener = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: detener.set())
     signal.signal(signal.SIGTERM, lambda *_: detener.set())

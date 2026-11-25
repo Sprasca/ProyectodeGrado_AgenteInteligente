@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Protocol
 
 from .enums import ClaseNotificacion, EstadoEnvio, Rol, TipoNotificacion
@@ -242,6 +243,47 @@ def resolucion_jornada_sin_alertas() -> str:
 
 def resolucion_reporte_consolidado(id_reporte: uuid.UUID) -> str:
     return f"Se consolidó el reporte {id_reporte} de la jornada."
+
+
+def causa_archivo_no_recibido(registro: dict[str, Any], duplicada: bool) -> Causa:
+    """
+    RF01 1.a y 2.a: el archivo fue a no_recibidos/. Una factura duplicada no es una falla del sistema sino un
+    documento enviado dos veces: es CONTABLE y va al auxiliar. Lo demás es TECNICO, para el ADMIN.
+    """
+    archivo = registro["archivo"]
+    movido_a = registro.get("movido_a")
+    clave = f"archivo:{Path(movido_a).name if movido_a else archivo + ':' + str(registro.get('fecha'))}"
+    if duplicada:
+        existente = registro.get("id_transaccion_existente")
+        mensaje = (
+            f"La factura del archivo {archivo} ya estaba registrada"
+            f"{f' (transacción {existente})' if existente else ''} y no se recibió otra vez: se movió a "
+            f"no_recibidos/. Revise si el sistema de facturación la envió dos veces."
+        )
+        return Causa(TipoNotificacion.FACTURA_DUPLICADA, clave, mensaje, registro)
+    destino = movido_a or "(no se pudo mover)"
+    mensaje = f"ALERTA TÉCNICA: el archivo {archivo} no se recibió y quedó en {destino}. Motivo: {registro['motivo']}"
+    return Causa(TipoNotificacion.ARCHIVO_NO_RECIBIDO, clave, mensaje, registro)
+
+
+def clave_directorio(directorio: Path | str) -> str:
+    return f"directorio:{directorio}"
+
+
+def causa_directorio_no_disponible(directorio: Path | str) -> Causa:
+    """RF01 3.a: queda atendida sola cuando el directorio vuelve."""
+    mensaje = (
+        f"ALERTA TÉCNICA: el directorio de entrada {directorio} no está disponible o no es accesible. "
+        "La recepción se reanudará sola cuando vuelva."
+    )
+    datos = {"directorio": str(directorio)}
+    return Causa(TipoNotificacion.DIRECTORIO_NO_DISPONIBLE, clave_directorio(directorio), mensaje, datos)
+
+
+def causa_error_recepcion(archivo: str, error: str, fecha: str) -> Causa:
+    mensaje = f"ALERTA TÉCNICA: error inesperado al recibir el archivo {archivo}: {error}"
+    datos = {"archivo": archivo, "error": error, "fecha": fecha}
+    return Causa(TipoNotificacion.ERROR_RECEPCION, f"recepcion:{archivo}:{fecha}", mensaje, datos)
 
 
 def causa_jornada_sin_cierre(jornada: date, mensaje: str, datos: dict[str, Any]) -> Causa:
