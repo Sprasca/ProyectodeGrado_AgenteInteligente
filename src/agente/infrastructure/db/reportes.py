@@ -249,6 +249,9 @@ class RepositorioReportesSQL:
             ultimo_numero=ultimo,
             alertas_pendientes=alertas,
             transacciones_sin_reporte=sin_reporte,
+            transacciones_recibidas=sesion.scalar(
+                de_la_jornada.where(TransaccionModel.estado != EstadoTransaccion.RECHAZADA.value)
+            ),
         )
 
     def resumen_jornada(self, fecha_jornada: date) -> ResumenJornada:

@@ -136,6 +136,29 @@ def test_con_alertas_no_cierra_no_reintenta_y_registra_la_alerta_tecnica(entorno
     assert entorno.cierres() == []
 
 
+def test_si_todas_las_transacciones_estan_en_alerta_registra_la_alerta_con_las_pendientes(entorno):
+    """Sin ninguna aprobada sí hay trabajo pendiente para el contador: la jornada queda sin cierre y se alerta."""
+    entorno.recibir("FV-A1", alerta=True)
+    entorno.recibir("FV-A2", alerta=True)
+    entorno.recibir("FV-A3", alerta=True)
+    entorno.reloj.instante = CORTE_24
+    assert entorno.cierre.revisar() is True
+    assert entorno.cierres() == []
+    (alerta,) = entorno.alertas.listar()
+    assert (alerta.tipo, alerta.fecha_jornada) == (TipoAlertaTecnica.JORNADA_SIN_CIERRE, HOY)
+    assert alerta.datos["alertas_pendientes"] == 3
+    assert "Transacciones en alerta pendientes: 3" in alerta.mensaje
+
+
+def test_si_todas_las_transacciones_fueron_rechazadas_no_hay_alerta(entorno):
+    """Solo una jornada sin transacciones (sin contar las RECHAZADAS) se cierra sin reporte y sin alerta."""
+    for numero in ("FV-R1", "FV-R2"):
+        entorno.transacciones.rechazar(entorno.recibir(numero), motivo="Factura de prueba anulada", usuario_id=1)
+    entorno.reloj.instante = CORTE_24
+    assert entorno.cierre.revisar() is True
+    assert entorno.reportes.listar() == [] and entorno.alertas.listar() == []
+
+
 def test_al_reiniciar_no_repite_el_intento_que_ya_fallo(entorno):
     entorno.recibir("FV-1")
     entorno.recibir("FV-A", alerta=True)

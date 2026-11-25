@@ -6,7 +6,8 @@ hace UN SOLO intento de generar su reporte de CIERRE, sin usuario y con corte a 
 estaba corriendo a esa hora, hace ese mismo intento al arrancar, con el corte original.
 
 Sin reintentos: si la jornada queda sin reporte de cierre (alertas sin resolver, descuadre, error), se
-registra una alerta técnica JORNADA_SIN_CIERRE en la tabla alerta_tecnica, con el número de alertas
+registra una alerta técnica JORNADA_SIN_CIERRE (siempre que la jornada haya recibido alguna transacción
+sin contar las RECHAZADAS; si todas están en alerta, también) en la tabla alerta_tecnica, con el número de alertas
 pendientes, y queda un ERROR en el log. Esa fila es además la constancia de que el intento ya se hizo: al
 reiniciar el proceso no se repite. Después, el auxiliar o el contador generan el cierre a mano
 (POST /reportes/consolidar con tipo CIERRE). Si la base no responde, no se puede registrar nada: queda
@@ -93,7 +94,10 @@ class CierreProgramado:
         except JornadaCerradaError:
             return
         except SinTransaccionesError:
-            return  # jornada sin movimiento: no hay nada que cerrar ni de qué alertar (queda INFO en el log)
+            # Solo una jornada que no recibió ninguna transacción (sin contar las RECHAZADAS) queda sin cierre
+            # y sin alerta. Si recibió alguna, la falta de cierre es trabajo pendiente: se alerta.
+            if self.reportes.resumen_jornada(jornada).transacciones_recibidas:
+                self._alertar(jornada, "no se pudo generar el reporte de cierre", corte)
         except ConsolidacionBloqueadaError as exc:
             self._alertar(jornada, "transacciones en alerta sin resolver", corte, exc.pendientes)
 

@@ -232,12 +232,14 @@ class ContratoReportes:
         parcial = self.parcial()
         self.aprobada()
         self.en_alerta()
+        self.t.rechazar(self.aprobada(), motivo=MOTIVO)  # las RECHAZADAS no cuentan como recibidas
         self.r.anular(parcial.id, motivo=MOTIVO, usuario_id=id_usuario)
         # El anulado no cuenta como vigente, pero su número ya se usó.
         resumen = self.r.resumen_jornada(JORNADA)
         assert resumen.fecha_jornada == JORNADA
         assert (resumen.reportes_vigentes, resumen.parciales_vigentes, resumen.ultimo_numero) == (0, 0, 1)
         assert (resumen.alertas_pendientes, resumen.transacciones_sin_reporte) == (1, 2)
+        assert resumen.transacciones_recibidas == 3
 
     # --- trazabilidad ------------------------------------------------------------------------------
 

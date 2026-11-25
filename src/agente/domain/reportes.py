@@ -135,6 +135,8 @@ class ResumenJornada:
     ultimo_numero: int  # el mayor número usado en la jornada, contando los anulados (0 si no hay)
     alertas_pendientes: int
     transacciones_sin_reporte: int
+    # Recibidas en la jornada sin contar las RECHAZADAS (aprobadas, en alerta o ya en un reporte).
+    transacciones_recibidas: int
 
     @property
     def parciales_vigentes(self) -> int:

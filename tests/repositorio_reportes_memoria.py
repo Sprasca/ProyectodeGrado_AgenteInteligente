@@ -67,6 +67,7 @@ class RepositorioReportesMemoria:
             transacciones_sin_reporte=sum(
                 1 for t in transacciones if t.estado in ESTADOS_CONSOLIDABLES and t.reporte_id is None
             ),
+            transacciones_recibidas=sum(1 for t in transacciones if t.estado is not EstadoTransaccion.RECHAZADA),
         )
 
     def consolidar(
