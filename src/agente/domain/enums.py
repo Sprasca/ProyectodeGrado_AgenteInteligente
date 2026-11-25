@@ -81,8 +81,37 @@ class TipoReporte(StrEnum):
     CIERRE = "CIERRE"
 
 
-class TipoAlertaTecnica(StrEnum):
-    JORNADA_SIN_CIERRE = "JORNADA_SIN_CIERRE"
+class ClaseNotificacion(StrEnum):
+    """CONTABLE: para el contador y el auxiliar. TECNICA: para el responsable de mantenimiento (ADMIN)."""
+
+    CONTABLE = "CONTABLE"
+    TECNICA = "TECNICA"
+
+
+class TipoNotificacion(StrEnum):
+    """Causas de una notificación (RF04 y las alertas que piden RF01, RF06 y RF07)."""
+
+    # Contables
+    TRANSACCION_EN_ALERTA = "TRANSACCION_EN_ALERTA"  # RF04 y RN05
+    CONSOLIDACION_BLOQUEADA = "CONSOLIDACION_BLOQUEADA"  # RF06 1.a
+    REPORTE_DISPONIBLE = "REPORTE_DISPONIBLE"  # RF06 paso 8
+    FACTURA_DUPLICADA = "FACTURA_DUPLICADA"  # documento enviado dos veces a la carpeta
+    # Técnicas
+    DESCUADRE = "DESCUADRE"  # RF06 3.a
+    EXPORTACION_FALLIDA = "EXPORTACION_FALLIDA"  # RF07 anomalía 4
+    JORNADA_SIN_CIERRE = "JORNADA_SIN_CIERRE"  # cierre programado sin reporte de cierre
+    ARCHIVO_NO_RECIBIDO = "ARCHIVO_NO_RECIBIDO"  # RF01 1.a y 2.a
+    DIRECTORIO_NO_DISPONIBLE = "DIRECTORIO_NO_DISPONIBLE"  # RF01 3.a
+    ERROR_RECEPCION = "ERROR_RECEPCION"  # error inesperado al recibir un archivo
+    CORREO_NO_ENVIADO = "CORREO_NO_ENVIADO"  # RF04 anomalía 2
+
+
+class EstadoEnvio(StrEnum):
+    """Envío de una notificación por correo (canal opcional)."""
+
+    PENDIENTE = "PENDIENTE"
+    ENVIADA = "ENVIADA"
+    FALLIDA = "FALLIDA"  # agotó los intentos; la notificación sigue en la bandeja
 
 
 class TipoDocumento(StrEnum):

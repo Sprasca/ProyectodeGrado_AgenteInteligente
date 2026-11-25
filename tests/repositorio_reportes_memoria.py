@@ -10,8 +10,9 @@ from itertools import count
 
 from repositorio_memoria import RepositorioMemoria
 
-from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoReporte
+from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoNotificacion, TipoReporte
 from agente.domain.errors import ReporteNoEncontradoError
+from agente.domain.notificaciones import clave_jornada, resolucion_cierre
 from agente.domain.reportes import (
     CUPO_CIERRE,
     ESTADOS_CONSOLIDABLES,
@@ -39,6 +40,7 @@ from agente.infrastructure.db.reportes import (
 class RepositorioReportesMemoria:
     def __init__(self, transacciones: RepositorioMemoria) -> None:
         self.transacciones = transacciones
+        self.notificaciones = transacciones.notificaciones
         self._reportes: dict[uuid.UUID, ReporteDiario] = {}
         self._cupos: dict[uuid.UUID, int] = {}
         self._eventos: list[EventoReporte] = []
@@ -110,6 +112,10 @@ class RepositorioReportesMemoria:
             self.transacciones._por_id[t.id] = replace(t, reporte_id=reporte.id)
             self.transacciones._registrar(t.id, TipoEvento.CONSOLIDADA, usuario_id, despues=vinculo)
         self._registrar(reporte.id, EstadoReporte.CONSOLIDADO, usuario_id, despues=datos_consolidado(consolidado))
+        if self.notificaciones is not None and tipo is TipoReporte.CIERRE:
+            self.notificaciones.atender_causa(
+                TipoNotificacion.JORNADA_SIN_CIERRE, clave_jornada(fecha_jornada), resolucion_cierre(reporte.id)
+            )
         return reporte
 
     def obtener(self, id_reporte: uuid.UUID) -> ReporteDiario | None:

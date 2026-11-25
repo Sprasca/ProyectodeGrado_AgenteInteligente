@@ -3,7 +3,7 @@
 Los usan igual la API (reportes parciales y de cierre a mano, del auxiliar o del contador) y el cierre
 programado (usuario None). Hasta que exista el módulo de notificaciones (Fase 5), los avisos que pide el
 manual quedan en el log: WARNING si hay alertas sin resolver, ERROR ante un error de integridad (alerta
-técnica). La jornada sin reporte de cierre queda además en la tabla alerta_tecnica (ver application.cierre).
+técnica). La jornada sin reporte de cierre es una notificación técnica (ver application.cierre).
 """
 
 from __future__ import annotations

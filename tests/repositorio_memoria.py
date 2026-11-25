@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from itertools import count
 
 from repositorio_jornada_memoria import RepositorioHorarioMemoria
+from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
@@ -44,6 +45,7 @@ class RepositorioMemoria:
         cuentas_en_bd: set[str] | None = None,
         horario: RepositorioHorarioMemoria | None = None,
         reloj: Callable[[], datetime] | None = None,
+        notificaciones: RepositorioNotificacionesMemoria | None = None,
     ) -> None:
         """
         cuentas_en_bd simula la tabla cuenta_puc (llave foránea); por defecto, las del catálogo.
@@ -51,6 +53,8 @@ class RepositorioMemoria:
         recepción de cada factura (por defecto, ahora), para probar a qué jornada pertenece.
         """
         self.horario = horario if horario is not None else RepositorioHorarioMemoria()
+        # Las notificaciones (comparten la base en SQL). None: las pruebas que no las usan no las crean.
+        self.notificaciones = notificaciones
         self.reloj = reloj or (lambda: datetime.now(UTC))
         self._catalogo = catalogo
         self._cuentas_en_bd = cuentas_en_bd if cuentas_en_bd is not None else {c.codigo for c in catalogo.cuentas}

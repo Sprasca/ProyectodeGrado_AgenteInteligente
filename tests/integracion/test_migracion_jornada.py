@@ -145,7 +145,10 @@ def test_el_horario_exige_apertura_antes_del_cierre(base):
             sesion.execute(text("INSERT INTO horario_jornada (hora_apertura, hora_cierre) VALUES ('18:00', '08:00')"))
 
 
-def test_una_sola_alerta_de_jornada_sin_cierre_por_jornada(base):
+def test_una_sola_alerta_de_jornada_sin_cierre_por_jornada(base_temporal):
+    """En la 0010 (la 0011 la integra en las notificaciones)."""
+    command.upgrade(configuracion_alembic(), "0010")
+    base = base_temporal
     insertar = text(
         "INSERT INTO alerta_tecnica (tipo, fecha_jornada, mensaje) VALUES ('JORNADA_SIN_CIERRE', '2026-11-24', 'x')"
     )

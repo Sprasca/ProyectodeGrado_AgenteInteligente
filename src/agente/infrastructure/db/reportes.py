@@ -12,13 +12,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from ...domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoReporte
+from ...domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoNotificacion, TipoReporte
 from ...domain.errors import (
     ExportacionFallidaError,
     JornadaCerradaError,
     LimiteDeReportesError,
     ReporteNoEncontradoError,
 )
+from ...domain.notificaciones import clave_jornada, resolucion_cierre
 from ...domain.reportes import (
     CUPO_CIERRE,
     ESTADOS_CONSOLIDABLES,
@@ -41,6 +42,7 @@ from ...domain.reportes import (
 )
 from ...domain.transacciones import exigir_motivo
 from .models import EventoReporteModel, ReporteDiarioModel, ReporteTransaccionModel, TransaccionModel
+from .notificaciones import atender_en_sesion
 from .transacciones import TransaccionRegistrada, a_registro, nuevo_evento, transaccion_bd
 
 # generar(reporte, transacciones, id del autor, fecha de autorización) -> contenido del archivo
@@ -320,6 +322,13 @@ class RepositorioReportesSQL:
                         reporte.id, EstadoReporte.CONSOLIDADO, usuario_id, despues=datos_consolidado(consolidado)
                     )
                 )
+                if tipo is TipoReporte.CIERRE:
+                    atender_en_sesion(
+                        sesion,
+                        TipoNotificacion.JORNADA_SIN_CIERRE,
+                        clave_jornada(fecha_jornada),
+                        resolucion_cierre(reporte.id),
+                    )
                 sesion.flush()
                 return _a_reporte(reporte, [t.id for t in filas])
         except IntegrityError as exc:

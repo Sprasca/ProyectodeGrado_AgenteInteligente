@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
@@ -29,12 +28,11 @@ from ...domain.transacciones import (
     validar_correccion,
     validar_rechazo,
 )
+
+# transaccion_bd y RepositorioNoDisponibleError viven en .conexion; se reexportan aquí (los importan otros módulos).
+from .conexion import RepositorioNoDisponibleError, transaccion_bd
 from .horario import horario_vigente
 from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
-
-
-class RepositorioNoDisponibleError(Exception):
-    """No hay conexión con la base de datos."""
 
 
 class CuentaNoSembradaError(Exception):
@@ -49,17 +47,6 @@ _VIOLACION_UNICA = "23505"
 _VIOLACION_LLAVE_FORANEA = "23503"
 
 
-@contextmanager
-def transaccion_bd(fabrica: sessionmaker[Session]) -> Iterator[Session]:
-    """Una sesión en una transacción de base de datos; sin conexión → RepositorioNoDisponibleError."""
-    try:
-        with fabrica() as sesion, sesion.begin():
-            yield sesion
-    except (OperationalError, InterfaceError) as exc:
-        raise RepositorioNoDisponibleError(
-            "No hay conexión con PostgreSQL. Verifique que la base esté levantada "
-            "(docker compose up -d db) y que DATABASE_URL sea correcta."
-        ) from exc
 
 
 def _sqlstate(exc: IntegrityError) -> str | None:

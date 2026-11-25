@@ -134,6 +134,8 @@ class UsuarioModel(Base):
     rol: Mapped[str] = mapped_column(String(10))
     activo: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Opcional: solo para el correo de las notificaciones (si hay SMTP configurado).
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
 
 
 class EventoTransaccionModel(Base):
@@ -298,23 +300,89 @@ class HorarioJornadaModel(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class AlertaTecnicaModel(Base):
+_TIPOS_NOTIFICACION = (
+    "tipo IN ('TRANSACCION_EN_ALERTA', 'CONSOLIDACION_BLOQUEADA', 'REPORTE_DISPONIBLE', 'FACTURA_DUPLICADA', "
+    "'DESCUADRE', 'EXPORTACION_FALLIDA', 'JORNADA_SIN_CIERRE', 'ARCHIVO_NO_RECIBIDO', 'DIRECTORIO_NO_DISPONIBLE', "
+    "'ERROR_RECEPCION', 'CORREO_NO_ENVIADO')"
+)
+
+
+class NotificacionModel(Base):
     """
-    Alertas técnicas para el responsable; hoy, la jornada que quedó sin reporte de cierre. La Fase 5 las
-    convertirá en notificaciones y llenará notificada_en. Una por tipo y jornada: el cierre programado hace
-    un solo intento y esta fila deja constancia de que ya lo hizo.
+    Una causa de notificación (RF04): transacción en alerta, reporte, jornada, archivo... Cada destinatario
+    tiene su copia en notificacion_usuario. Mientras una causa esté abierta (atendida_en NULL) no hay otra
+    igual: índice único parcial sobre (tipo, clave).
     """
 
-    __tablename__ = "alerta_tecnica"
+    __tablename__ = "notificacion"
     __table_args__ = (
-        CheckConstraint("tipo IN ('JORNADA_SIN_CIERRE')", name="ck_alerta_tecnica_tipo"),
-        UniqueConstraint("tipo", "fecha_jornada", name="uq_alerta_tecnica_tipo_jornada"),
+        CheckConstraint(_TIPOS_NOTIFICACION, name="ck_notificacion_tipo"),
+        CheckConstraint("clase IN ('CONTABLE', 'TECNICA')", name="ck_notificacion_clase"),
+        Index(
+            "uq_notificacion_causa_abierta",
+            "tipo",
+            "clave",
+            unique=True,
+            postgresql_where=text("atendida_en IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tipo: Mapped[str] = mapped_column(String(30))
-    fecha_jornada: Mapped[date | None] = mapped_column(Date, nullable=True)
+    clase: Mapped[str] = mapped_column(String(8))
+    clave: Mapped[str] = mapped_column(String(300))
     mensaje: Mapped[str] = mapped_column(Text)
     datos: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    transaccion_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("transaccion.id", name="fk_notificacion_transaccion"), nullable=True, index=True
+    )
+    reporte_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("reporte_diario.id", name="fk_notificacion_reporte"), nullable=True, index=True
+    )
+    fecha_jornada: Mapped[date | None] = mapped_column(Date, nullable=True)
+    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actualizada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    atendida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Quién la atendió a mano (NULL si se atendió sola al resolverse la causa).
+    atendida_por: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", name="fk_notificacion_atendida_por"), nullable=True
+    )
+    resolucion: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NotificacionUsuarioModel(Base):
+    """La copia de cada destinatario: una sola por causa y usuario (llave primaria compuesta)."""
+
+    __tablename__ = "notificacion_usuario"
+
+    notificacion_id: Mapped[int] = mapped_column(
+        ForeignKey("notificacion.id", name="fk_notificacion_usuario_notificacion"), primary_key=True
+    )
+    usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("usuario.id", name="fk_notificacion_usuario_usuario"), primary_key=True, index=True
+    )
+    # True: la ve pero no le toca resolverla (el auxiliar en una transacción en alerta, RN05).
+    informativa: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    leida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EnvioCorreoModel(Base):
+    """Envío por correo de una notificación a un destinatario (canal opcional, solo con SMTP configurado)."""
+
+    __tablename__ = "envio_correo"
+    __table_args__ = (
+        CheckConstraint("estado IN ('PENDIENTE', 'ENVIADA', 'FALLIDA')", name="ck_envio_correo_estado"),
+        UniqueConstraint("notificacion_id", "usuario_id", name="uq_envio_correo_notificacion_usuario"),
+        Index("ix_envio_correo_pendientes", "estado", "proximo_intento"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notificacion_id: Mapped[int] = mapped_column(ForeignKey("notificacion.id", name="fk_envio_correo_notificacion"))
+    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuario.id", name="fk_envio_correo_usuario"))
+    destinatario: Mapped[str] = mapped_column(String(254))
+    estado: Mapped[str] = mapped_column(String(9))
+    intentos: Mapped[int] = mapped_column(server_default=text("0"))
+    ultimo_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proximo_intento: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    notificada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enviado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
