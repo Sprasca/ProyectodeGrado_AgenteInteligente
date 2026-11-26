@@ -3,22 +3,35 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ...domain.asiento import Partida
 from ...domain.documento import DocumentoOriginal, DocumentoRegistrado
-from ...domain.enums import CanalRecepcion, EstadoTransaccion, Naturaleza, TipoDocumento, TipoEvento
+from ...domain.enums import (
+    CanalRecepcion,
+    EstadoTransaccion,
+    Naturaleza,
+    TipoDocumento,
+    TipoEvento,
+    TipoNotificacion,
+)
 from ...domain.errors import FacturaDuplicadaError, TransaccionNoEncontradaError
 from ...domain.jornada import jornada_de
+from ...domain.notificaciones import (
+    causa_transaccion_en_alerta,
+    clave_jornada,
+    clave_transaccion,
+    resolucion_jornada_sin_alertas,
+    resolucion_transaccion,
+)
 from ...domain.puc import CatalogoPUC
 from ...domain.reportes import exigir_sin_reporte
 from ...domain.resultado import ResultadoClasificacion
@@ -29,12 +42,12 @@ from ...domain.transacciones import (
     validar_correccion,
     validar_rechazo,
 )
+
+# transaccion_bd y RepositorioNoDisponibleError viven en .conexion; se reexportan aquí (los importan otros módulos).
+from .conexion import RepositorioNoDisponibleError, transaccion_bd
 from .horario import horario_vigente
 from .models import CuentaPUCModel, DocumentoModel, EventoTransaccionModel, PartidaModel, TransaccionModel
-
-
-class RepositorioNoDisponibleError(Exception):
-    """No hay conexión con la base de datos."""
+from .notificaciones import atender_en_sesion, notificar_en_sesion
 
 
 class CuentaNoSembradaError(Exception):
@@ -49,17 +62,6 @@ _VIOLACION_UNICA = "23505"
 _VIOLACION_LLAVE_FORANEA = "23503"
 
 
-@contextmanager
-def transaccion_bd(fabrica: sessionmaker[Session]) -> Iterator[Session]:
-    """Una sesión en una transacción de base de datos; sin conexión → RepositorioNoDisponibleError."""
-    try:
-        with fabrica() as sesion, sesion.begin():
-            yield sesion
-    except (OperationalError, InterfaceError) as exc:
-        raise RepositorioNoDisponibleError(
-            "No hay conexión con PostgreSQL. Verifique que la base esté levantada "
-            "(docker compose up -d db) y que DATABASE_URL sea correcta."
-        ) from exc
 
 
 def _sqlstate(exc: IntegrityError) -> str | None:
@@ -415,6 +417,9 @@ class RepositorioSQL:
                 sesion.add(nuevo_evento(t.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion))
                 sesion.add(nuevo_evento(t.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado)))
                 sesion.flush()
+                if resultado.estado is EstadoTransaccion.EN_ALERTA:
+                    # RF04: en la misma transacción que la factura (o queda todo, o no queda nada).
+                    notificar_en_sesion(sesion, causa_transaccion_en_alerta(a_registro(t)))
                 return t.id
         except IntegrityError as exc:
             # Carrera entre dos guardados de la misma factura: la restricción UNIQUE decide.
@@ -468,6 +473,31 @@ class RepositorioSQL:
         with self._transaccion() as sesion:
             return [a_registro(t) for t in sesion.scalars(consulta)]
 
+    def _resolver_alerta(self, sesion: Session, t: TransaccionModel, accion: str, usuario_id: int | None) -> None:
+        """Al aprobar, corregir o rechazar, su notificación de alerta queda ATENDIDA (misma transacción)."""
+        atender_en_sesion(
+            sesion,
+            TipoNotificacion.TRANSACCION_EN_ALERTA,
+            clave_transaccion(t.id),
+            resolucion_transaccion(accion, usuario_id),
+        )
+        sesion.flush()
+        quedan = sesion.scalar(
+            select(func.count())
+            .select_from(TransaccionModel)
+            .where(
+                TransaccionModel.fecha_jornada == t.fecha_jornada,
+                TransaccionModel.estado == EstadoTransaccion.EN_ALERTA.value,
+            )
+        )
+        if not quedan:
+            atender_en_sesion(
+                sesion,
+                TipoNotificacion.CONSOLIDACION_BLOQUEADA,
+                clave_jornada(t.fecha_jornada),
+                resolucion_jornada_sin_alertas(),
+            )
+
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
     ) -> TransaccionRegistrada:
@@ -481,6 +511,7 @@ class RepositorioSQL:
             sesion.add(
                 nuevo_evento(t.id, TipoEvento.APROBADA, usuario_id, motivo=motivo, antes=antes, despues=despues)
             )
+            self._resolver_alerta(sesion, t, "aprobó", usuario_id)
             sesion.flush()
             return a_registro(t)
 
@@ -514,6 +545,7 @@ class RepositorioSQL:
                         despues=estado_y_partidas(EstadoTransaccion.CORREGIDA_CONTADOR, asiento.partidas),
                     )
                 )
+                self._resolver_alerta(sesion, t, "corrigió", usuario_id)
                 sesion.flush()
                 return a_registro(t)
         except IntegrityError as exc:
@@ -535,6 +567,7 @@ class RepositorioSQL:
                     t.id, TipoEvento.RECHAZADA, usuario_id, motivo=motivo, antes=antes, despues={"estado": t.estado}
                 )
             )
+            self._resolver_alerta(sesion, t, "rechazó", usuario_id)
             sesion.flush()
             return a_registro(t)
 

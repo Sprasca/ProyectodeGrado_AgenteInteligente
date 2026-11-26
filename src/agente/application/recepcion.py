@@ -34,6 +34,7 @@ from ..config import Settings
 from ..domain.documento import DocumentoOriginal, DocumentoRegistrado
 from ..domain.enums import CanalRecepcion, TipoDocumento
 from ..domain.errors import FacturaDuplicadaError
+from ..domain.notificaciones import Causa, causa_archivo_no_recibido
 from ..infrastructure.db.transacciones import RepositorioNoDisponibleError
 from ..infrastructure.dian.documentos import tipo_por_nombre
 from ..infrastructure.dian.validacion import validar_documento
@@ -114,8 +115,11 @@ class ReceptorFacturas:
         dormir: Callable[[float], None] = time.sleep,
         ahora: Callable[[], datetime] = lambda: datetime.now(UTC),
         consultar_registro: ConsultaRegistro | None = None,
+        notificar: Callable[[Causa], object] | None = None,
     ) -> None:
+        """notificar(causa): registra la notificación de un archivo no recibido (RF01); opcional."""
         self.configuracion = configuracion
+        self._notificar = notificar
         self._procesar = procesar
         self._consultar_registro = consultar_registro
         self._dormir = dormir
@@ -278,9 +282,19 @@ class ReceptorFacturas:
             destino.with_name(destino.name + SUFIJO_MOTIVO).write_text(
                 json.dumps(registro, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        # Alerta técnica (RF01 1.a y 2.a): registro de nivel ERROR con el motivo.
+        # Alerta técnica (RF01 1.a y 2.a): registro de nivel ERROR con el motivo y notificación.
         log.error("Factura NO recibida: %s → %s. Motivo: %s", ruta.name, destino or "(no se pudo mover)", motivo)
+        self.notificar(causa_archivo_no_recibido(registro, isinstance(exc, FacturaDuplicadaError)))
         return Recepcion(ruta.name, False, destino, motivo=motivo, intentos=intentos)
+
+    def notificar(self, causa: Causa) -> None:
+        """Si la base no responde, la notificación no se puede guardar: queda solo el ERROR del log."""
+        if self._notificar is None:
+            return
+        try:
+            self._notificar(causa)
+        except Exception as exc:
+            log.error("No se pudo registrar la notificación %s (%s): %s", causa.tipo, causa.clave, exc)
 
     def _mover(self, ruta: Path, carpeta: Path) -> Path | None:
         """Mueve el archivo sin sobrescribir: si ya existe uno con ese nombre, agrega fecha y hora."""
@@ -314,7 +328,15 @@ def consulta_por_defecto() -> ConsultaRegistro:
 
 def receptor_por_defecto(configuracion: ConfiguracionRecepcion, usar_nlp: bool = True) -> ReceptorFacturas:
     """El receptor que usa scripts/recibir_facturas.py: flujo de la API y consulta de lo ya registrado."""
-    return ReceptorFacturas(configuracion, procesador_por_defecto(usar_nlp), consultar_registro=consulta_por_defecto())
+    from ..infrastructure.db.notificaciones import RepositorioNotificacionesSQL
+    from ..infrastructure.db.session import fabrica_compartida
+
+    return ReceptorFacturas(
+        configuracion,
+        procesador_por_defecto(usar_nlp),
+        consultar_registro=consulta_por_defecto(),
+        notificar=RepositorioNotificacionesSQL(fabrica_compartida()).registrar,
+    )
 
 
 def procesador_por_defecto(usar_nlp: bool = True) -> Procesador:

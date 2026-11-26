@@ -43,6 +43,7 @@ from ..domain.errors import (
     DatosInvalidosError,
     ExportacionFallidaError,
     FacturaDuplicadaError,
+    NotificacionNoEncontradaError,
     ReglaNoEncontradaError,
     ReporteNoEncontradoError,
     RutaNoPermitidaError,
@@ -54,9 +55,11 @@ from ..domain.errors import (
     UsuarioNoEncontradoError,
 )
 from ..domain.jornada import Horario, hora_hhmm
+from ..domain.notificaciones import Notificacion
 from ..domain.puc import CatalogoPUC, ReglaIngreso
 from ..infrastructure.db.catalogo import ReglaGuardada, RepositorioCatalogo, RepositorioCatalogoSQL
 from ..infrastructure.db.jornada import RepositorioHorario, RepositorioHorarioSQL
+from ..infrastructure.db.notificaciones import RepositorioNotificaciones, RepositorioNotificacionesSQL
 from ..infrastructure.db.reportes import RepositorioReportes, RepositorioReportesSQL
 from ..infrastructure.db.session import fabrica_compartida
 from ..infrastructure.db.transacciones import (
@@ -128,6 +131,14 @@ def get_repositorio_horario() -> RepositorioHorario:
 RepoHorario = Annotated[RepositorioHorario, Depends(get_repositorio_horario)]
 
 
+def get_repositorio_notificaciones() -> RepositorioNotificaciones:
+    """Notificaciones en PostgreSQL. Las pruebas lo reemplazan con app.dependency_overrides."""
+    return RepositorioNotificacionesSQL(fabrica_compartida())
+
+
+RepoNotificaciones = Annotated[RepositorioNotificaciones, Depends(get_repositorio_notificaciones)]
+
+
 def _manejador(codigo: int):
     def manejar(_: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=codigo, content={"detail": str(exc)})
@@ -149,6 +160,7 @@ app.add_exception_handler(UsuarioNoEncontradoError, _manejador(404))
 app.add_exception_handler(UltimoAdministradorError, _manejador(409))
 app.add_exception_handler(RutaNoPermitidaError, _manejador(403))
 app.add_exception_handler(ReporteNoEncontradoError, _manejador(404))
+app.add_exception_handler(NotificacionNoEncontradaError, _manejador(404))
 app.add_exception_handler(SinTransaccionesError, _manejador(409))
 # Errores de integridad del sistema (RF06 3.a, RF07 anomalía 4): no los resuelve el usuario.
 app.add_exception_handler(ConsolidacionInconsistenteError, _manejador(500))
@@ -244,6 +256,7 @@ class UsuarioEntrada(BaseModel):
     nombre_completo: str
     contrasena: str
     rol: Rol
+    email: str | None = None  # opcional: para recibir las notificaciones por correo
 
 
 class SolicitudConsolidacion(BaseModel):
@@ -280,6 +293,7 @@ class UsuarioEdicion(BaseModel):
     rol: Rol | None = None
     activo: bool | None = None
     nombre_completo: str | None = None
+    email: str | None = None  # "" quita el correo
 
 
 def _regla_respuesta(guardada: ReglaGuardada) -> dict:
@@ -504,6 +518,7 @@ def consolidar(
     usuario: UsuarioAutorizado,
     reportes: RepoReportes,
     horarios: RepoHorario,
+    notificaciones: RepoNotificaciones,
     solicitud: Annotated[SolicitudConsolidacion | None, Body()] = None,
 ):
     """
@@ -520,6 +535,7 @@ def consolidar(
         usuario_id=usuario.id,
         tipo=solicitud.tipo,
         fecha_jornada=solicitud.fecha_jornada,
+        notificaciones=notificaciones,
     )
     return jsonable_encoder(reporte)
 
@@ -577,12 +593,15 @@ def eventos_reporte(id_reporte: uuid.UUID, reportes: RepoReportes):
 
 
 @app.post("/reportes/{id_reporte}/exportar")
-def exportar(id_reporte: uuid.UUID, usuario: UsuarioAutorizado, reportes: RepoReportes):
+def exportar(
+    id_reporte: uuid.UUID, usuario: UsuarioAutorizado, reportes: RepoReportes, notificaciones: RepoNotificaciones
+):
     """
     El contador autoriza y en el mismo paso se genera el XML: CONSOLIDADO → EXPORTADO.
     Ya exportado, anulado o con transacciones no aprobadas → 409. Falla la generación → 500 y sigue CONSOLIDADO.
     """
-    return jsonable_encoder(exportar_reporte(reportes, id_reporte, usuario_id=usuario.id))
+    exportado = exportar_reporte(reportes, id_reporte, usuario_id=usuario.id, notificaciones=notificaciones)
+    return jsonable_encoder(exportado)
 
 
 @app.get("/reportes/{id_reporte}/xml", dependencies=[Autorizado])
@@ -608,6 +627,49 @@ def anular(id_reporte: uuid.UUID, solicitud: SolicitudAnulacion, usuario: Usuari
     return jsonable_encoder(reportes.anular(id_reporte, motivo=solicitud.motivo, usuario_id=usuario.id))
 
 
+# --- Notificaciones (RF04): cada usuario solo ve, lee y atiende las suyas ------------------------------
+
+
+def _notificacion_respuesta(notificacion: Notificacion) -> dict:
+    return jsonable_encoder(asdict(notificacion) | {"se_atiende_a_mano": notificacion.se_atiende_a_mano})
+
+
+@app.get("/notificaciones")
+def listar_notificaciones(
+    usuario: UsuarioAutorizado, notificaciones: RepoNotificaciones, no_leidas: bool = False, no_atendidas: bool = False
+):
+    """Las del usuario autenticado, de la más reciente a la más antigua. Filtros opcionales."""
+    vistas = notificaciones.listar(usuario.id, no_leidas=no_leidas, no_atendidas=no_atendidas)
+    return [_notificacion_respuesta(n) for n in vistas]
+
+
+@app.get("/notificaciones/no-leidas/total")
+def total_no_leidas(usuario: UsuarioAutorizado, notificaciones: RepoNotificaciones) -> dict:
+    return {"no_leidas": notificaciones.contar_no_leidas(usuario.id)}
+
+
+@app.post("/notificaciones/leer-todas")
+def leer_todas(usuario: UsuarioAutorizado, notificaciones: RepoNotificaciones) -> dict:
+    return {"marcadas": notificaciones.leer_todas(usuario.id)}
+
+
+@app.post("/notificaciones/{id_notificacion}/leer")
+def leer_notificacion(id_notificacion: int, usuario: UsuarioAutorizado, notificaciones: RepoNotificaciones):
+    """Marca leída su copia. Una notificación de otro usuario responde 404."""
+    return _notificacion_respuesta(notificaciones.leer(usuario.id, id_notificacion))
+
+
+@app.post("/notificaciones/{id_notificacion}/atender")
+def atender_notificacion(id_notificacion: int, usuario: UsuarioAutorizado, notificaciones: RepoNotificaciones):
+    """
+    Solo las que no se resuelven solas: descuadre, archivo no recibido, factura duplicada, error inesperado y
+    correo no enviado. Las demás (transacción en alerta, bloqueo de jornada, reporte disponible, jornada sin
+    cierre, exportación fallida, directorio no disponible) responden 409: se atienden resolviendo su causa.
+    Una copia informativa (el auxiliar en una transacción en alerta) también responde 409. De otro usuario → 404.
+    """
+    return _notificacion_respuesta(notificaciones.atender(usuario.id, id_notificacion))
+
+
 # --- Usuarios (solo ADMIN) -------------------------------------------------------------------
 
 
@@ -619,16 +681,25 @@ def listar_usuarios(usuarios: RepoUsuarios):
 @app.post("/usuarios", status_code=status.HTTP_201_CREATED, dependencies=[Autorizado])
 def crear_usuario(usuario: UsuarioEntrada, usuarios: RepoUsuarios):
     """Nombre repetido → 409. Datos inválidos (p. ej. contraseña de menos de 8 caracteres) → 422."""
-    creado = usuarios.crear(usuario.nombre_usuario, usuario.nombre_completo, usuario.contrasena, usuario.rol)
+    creado = usuarios.crear(
+        usuario.nombre_usuario, usuario.nombre_completo, usuario.contrasena, usuario.rol, email=usuario.email
+    )
     return jsonable_encoder(creado)
 
 
 @app.put("/usuarios/{id_usuario}", dependencies=[Autorizado])
 def actualizar_usuario(id_usuario: int, cambios: UsuarioEdicion, usuarios: RepoUsuarios):
-    """Cambia rol, estado (activo) o nombre completo. Dejar el sistema sin ADMIN activo → 409."""
-    if cambios.rol is None and cambios.activo is None and cambios.nombre_completo is None:
-        raise HTTPException(422, "Envíe al menos uno de: rol, activo, nombre_completo.")
+    """
+    Cambia rol, estado (activo), nombre completo o correo ("email": "" lo quita). Dejar el sistema sin ADMIN
+    activo → 409.
+    """
+    if cambios.rol is None and cambios.activo is None and cambios.nombre_completo is None and cambios.email is None:
+        raise HTTPException(422, "Envíe al menos uno de: rol, activo, nombre_completo, email.")
     actualizado = usuarios.actualizar(
-        id_usuario, rol=cambios.rol, activo=cambios.activo, nombre_completo=cambios.nombre_completo
+        id_usuario,
+        rol=cambios.rol,
+        activo=cambios.activo,
+        nombre_completo=cambios.nombre_completo,
+        email=cambios.email,
     )
     return jsonable_encoder(actualizado)

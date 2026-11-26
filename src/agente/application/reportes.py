@@ -3,7 +3,7 @@
 Los usan igual la API (reportes parciales y de cierre a mano, del auxiliar o del contador) y el cierre
 programado (usuario None). Hasta que exista el módulo de notificaciones (Fase 5), los avisos que pide el
 manual quedan en el log: WARNING si hay alertas sin resolver, ERROR ante un error de integridad (alerta
-técnica). La jornada sin reporte de cierre queda además en la tabla alerta_tecnica (ver application.cierre).
+técnica). La jornada sin reporte de cierre es una notificación técnica (ver application.cierre).
 """
 
 from __future__ import annotations
@@ -22,11 +22,31 @@ from ..domain.errors import (
     TransicionInvalidaError,
 )
 from ..domain.jornada import Horario, corte_de_la_jornada, jornada_de, ultima_jornada_terminada
+from ..domain.notificaciones import (
+    Causa,
+    causa_consolidacion_bloqueada,
+    causa_descuadre,
+    causa_exportacion_fallida,
+)
 from ..domain.reportes import EstadoJornada, ReporteDiario, estado_de_jornada
+from ..infrastructure.db.notificaciones import RepositorioNotificaciones
 from ..infrastructure.db.reportes import GeneradorArchivo, RepositorioReportes
 from ..infrastructure.erp import xml_reporte
 
 log = logging.getLogger("agente.reportes")
+
+
+def _notificar(notificaciones: RepositorioNotificaciones | None, causa: Causa) -> None:
+    """
+    Para las causas que son fallas: la transacción de negocio ya se revirtió, así que se guarda aparte. Si no
+    se puede (la base no responde), el error original sigue su curso y queda un ERROR en el log.
+    """
+    if notificaciones is None:
+        return
+    try:
+        notificaciones.registrar(causa)
+    except Exception:
+        log.exception("ALERTA TÉCNICA: no se pudo registrar la notificación %s (%s).", causa.tipo, causa.clave)
 
 
 def jornada_y_corte(
@@ -63,8 +83,13 @@ def consolidar_reporte(
     tipo: TipoReporte = TipoReporte.PARCIAL,
     fecha_jornada: date | None = None,
     ahora: datetime | None = None,
+    notificaciones: RepositorioNotificaciones | None = None,
 ) -> ReporteDiario:
-    """Consolida un reporte PARCIAL o de CIERRE (ver jornada_y_corte). Relanza los errores tras dejarlos en el log."""
+    """
+    Consolida un reporte PARCIAL o de CIERRE (ver jornada_y_corte). Relanza los errores tras dejarlos en el
+    log y, con `notificaciones`, notificar: el bloqueo por alertas al contador (RF06 1.a) y el descuadre al
+    ADMIN (RF06 3.a). El reporte disponible (RF06 paso 8) lo notifica el repositorio en su transacción.
+    """
     ahora = ahora or datetime.now(UTC)
     jornada, corte = jornada_y_corte(tipo, horario, ahora, fecha_jornada)
     quien = f"usuario {usuario_id}" if usuario_id is not None else "cierre programado"
@@ -73,6 +98,7 @@ def consolidar_reporte(
     except ConsolidacionBloqueadaError as exc:
         # RF06 1.a: el manual pide notificar al contador; hasta la Fase 5, un WARNING con el número pendiente.
         log.warning("Reporte %s de la jornada %s suspendido (%s): %s", tipo, jornada, quien, exc)
+        _notificar(notificaciones, causa_consolidacion_bloqueada(jornada, exc.pendientes, tipo.value))
         raise
     except SinTransaccionesError as exc:
         log.info("Reporte %s de la jornada %s (%s): %s", tipo, jornada, quien, exc)
@@ -80,6 +106,7 @@ def consolidar_reporte(
     except ConsolidacionInconsistenteError as exc:
         # RF06 3.a: error de integridad del sistema → alerta técnica al responsable de mantenimiento.
         log.error("ALERTA TÉCNICA: reporte %s de la jornada %s abortado (%s): %s", tipo, jornada, quien, exc)
+        _notificar(notificaciones, causa_descuadre(jornada, str(exc)))
         raise
     log.info(
         "Reporte %s n.º %d de la jornada %s consolidado (%s): %d transacciones, débitos = créditos = %s.",
@@ -112,6 +139,7 @@ def exportar_reporte(
     *,
     usuario_id: int | None,
     generar: GeneradorArchivo | None = None,
+    notificaciones: RepositorioNotificaciones | None = None,
 ) -> ReporteDiario:
     """
     RF07: el contador autoriza y en el mismo paso se genera el XML, se valida contra el esquema XSD y el
@@ -125,6 +153,7 @@ def exportar_reporte(
         )
     except ExportacionFallidaError as exc:
         log.error("ALERTA TÉCNICA: exportación del reporte %s fallida (usuario %s): %s", id_reporte, usuario_id, exc)
+        _notificar(notificaciones, causa_exportacion_fallida(id_reporte, str(exc)))
         raise
     log.info(
         "Reporte %s exportado por el usuario %s (SHA-256 %s).", reporte.id, usuario_id, reporte.archivo_sha256

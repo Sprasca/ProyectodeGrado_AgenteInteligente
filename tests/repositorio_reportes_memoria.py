@@ -10,8 +10,16 @@ from itertools import count
 
 from repositorio_memoria import RepositorioMemoria
 
-from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoReporte
+from agente.domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoNotificacion, TipoReporte
 from agente.domain.errors import ReporteNoEncontradoError
+from agente.domain.notificaciones import (
+    causa_reporte_disponible,
+    clave_jornada,
+    clave_reporte,
+    resolucion_cierre,
+    resolucion_reporte,
+    resolucion_reporte_consolidado,
+)
 from agente.domain.reportes import (
     CUPO_CIERRE,
     ESTADOS_CONSOLIDABLES,
@@ -39,6 +47,7 @@ from agente.infrastructure.db.reportes import (
 class RepositorioReportesMemoria:
     def __init__(self, transacciones: RepositorioMemoria) -> None:
         self.transacciones = transacciones
+        self.notificaciones = transacciones.notificaciones
         self._reportes: dict[uuid.UUID, ReporteDiario] = {}
         self._cupos: dict[uuid.UUID, int] = {}
         self._eventos: list[EventoReporte] = []
@@ -110,6 +119,17 @@ class RepositorioReportesMemoria:
             self.transacciones._por_id[t.id] = replace(t, reporte_id=reporte.id)
             self.transacciones._registrar(t.id, TipoEvento.CONSOLIDADA, usuario_id, despues=vinculo)
         self._registrar(reporte.id, EstadoReporte.CONSOLIDADO, usuario_id, despues=datos_consolidado(consolidado))
+        if self.notificaciones is not None:
+            self.notificaciones.notificar(causa_reporte_disponible(reporte))
+            self.notificaciones.atender_causa(
+                TipoNotificacion.CONSOLIDACION_BLOQUEADA,
+                clave_jornada(fecha_jornada),
+                resolucion_reporte_consolidado(reporte.id),
+            )
+        if self.notificaciones is not None and tipo is TipoReporte.CIERRE:
+            self.notificaciones.atender_causa(
+                TipoNotificacion.JORNADA_SIN_CIERRE, clave_jornada(fecha_jornada), resolucion_cierre(reporte.id)
+            )
         return reporte
 
     def obtener(self, id_reporte: uuid.UUID) -> ReporteDiario | None:
@@ -133,6 +153,14 @@ class RepositorioReportesMemoria:
         self._cargar(id_reporte)
         return [e for e in self._eventos if e.reporte_id == id_reporte]
 
+    def _atender_reporte(self, id_reporte, estado, usuario_id) -> None:
+        if self.notificaciones is not None:
+            self.notificaciones.atender_causa(
+                (TipoNotificacion.REPORTE_DISPONIBLE, TipoNotificacion.EXPORTACION_FALLIDA),
+                clave_reporte(id_reporte),
+                resolucion_reporte(estado.value, usuario_id),
+            )
+
     def exportar(self, id_reporte: uuid.UUID, *, usuario_id: int | None, generar: GeneradorArchivo) -> ReporteDiario:
         reporte = self._cargar(id_reporte)
         validar_exportacion(reporte.estado)
@@ -154,6 +182,7 @@ class RepositorioReportesMemoria:
         vinculo = datos_vinculo(id_reporte, reporte.fecha_jornada, reporte.tipo, reporte.numero)
         for t in incluidas:
             self.transacciones._registrar(t.id, TipoEvento.EXPORTADA, usuario_id, despues=vinculo | exportado)
+        self._atender_reporte(id_reporte, EstadoReporte.EXPORTADO, usuario_id)
         return self._reportes[id_reporte]
 
     def archivo(self, id_reporte: uuid.UUID) -> ArchivoExportado | None:
@@ -172,4 +201,5 @@ class RepositorioReportesMemoria:
                 self.transacciones._registrar(t.id, TipoEvento.LIBERADA, usuario_id, motivo=motivo, despues=liberada)
         self._reportes[id_reporte] = replace(reporte, estado=EstadoReporte.ANULADO)
         self._registrar(id_reporte, EstadoReporte.ANULADO, usuario_id, motivo=motivo)
+        self._atender_reporte(id_reporte, EstadoReporte.ANULADO, usuario_id)
         return self._reportes[id_reporte]

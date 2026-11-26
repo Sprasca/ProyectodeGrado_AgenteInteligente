@@ -144,3 +144,7 @@ class HorarioInvalidoError(DatosInvalidosError):
 
 class XmlInvalidoError(ErrorDeDominio):
     """El XML generado no cumple el esquema XSD versionado del reporte (RF07 anomalía 4)."""
+
+
+class NotificacionNoEncontradaError(ErrorDeDominio):
+    """No existe la notificación o no es de este usuario (cada usuario solo ve las suyas)."""

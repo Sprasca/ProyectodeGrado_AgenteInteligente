@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from repositorio_catalogo_memoria import RepositorioCatalogoMemoria
 from repositorio_jornada_memoria import RepositorioHorarioMemoria
 from repositorio_memoria import RepositorioMemoria
+from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 from repositorio_reportes_memoria import RepositorioReportesMemoria
 
 from agente.api.main import (
@@ -14,6 +15,7 @@ from agente.api.main import (
     get_repositorio,
     get_repositorio_catalogo,
     get_repositorio_horario,
+    get_repositorio_notificaciones,
     get_repositorio_reportes,
 )
 from agente.application.clasificar_con_nlp import invalidar_catalogo
@@ -22,13 +24,15 @@ from agente.application.clasificar_con_nlp import invalidar_catalogo
 @pytest.fixture
 def entorno_api(catalogo, usuarios_api):
     horario = RepositorioHorarioMemoria()
-    transacciones = RepositorioMemoria(catalogo, horario=horario)
+    notificaciones = RepositorioNotificacionesMemoria(usuarios_api.listar)
+    transacciones = RepositorioMemoria(catalogo, horario=horario, notificaciones=notificaciones)
     reglas = RepositorioCatalogoMemoria.desde_catalogo(catalogo, al_cambiar=invalidar_catalogo)
     app.dependency_overrides[get_repositorio] = lambda: transacciones
     app.dependency_overrides[get_repositorio_catalogo] = lambda: reglas
     reportes = RepositorioReportesMemoria(transacciones)
     app.dependency_overrides[get_repositorio_reportes] = lambda: reportes
     app.dependency_overrides[get_repositorio_horario] = lambda: horario
+    app.dependency_overrides[get_repositorio_notificaciones] = lambda: notificaciones
     yield SimpleNamespace(
         cliente=TestClient(app),
         transacciones=transacciones,
@@ -36,5 +40,6 @@ def entorno_api(catalogo, usuarios_api):
         usuarios=usuarios_api,
         reportes=reportes,
         horario=horario,
+        notificaciones=notificaciones,
     )
     app.dependency_overrides.clear()

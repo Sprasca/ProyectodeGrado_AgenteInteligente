@@ -15,6 +15,7 @@ from agente.domain.enums import Rol
 
 C, A, ADM = Rol.CONTADOR, Rol.AUXILIAR, Rol.ADMIN
 LECTURA = {C, A}
+TODOS = {C, A, ADM}
 
 ESPERADO: dict[tuple[str, str], set[Rol]] = {
     # Cargar facturas: solo AUXILIAR.
@@ -53,6 +54,12 @@ ESPERADO: dict[tuple[str, str], set[Rol]] = {
     ("GET", "/reportes/{id_reporte}/xml"): LECTURA,
     ("POST", "/reportes/{id_reporte}/exportar"): {C},
     ("POST", "/reportes/{id_reporte}/anular"): {C},
+    # Notificaciones: los tres roles; cada uno solo ve y atiende las suyas (404 si no es suya).
+    ("GET", "/notificaciones"): TODOS,
+    ("GET", "/notificaciones/no-leidas/total"): TODOS,
+    ("POST", "/notificaciones/leer-todas"): TODOS,
+    ("POST", "/notificaciones/{id_notificacion}/leer"): TODOS,
+    ("POST", "/notificaciones/{id_notificacion}/atender"): TODOS,
     # Usuarios: solo ADMIN.
     ("GET", "/usuarios"): {ADM},
     ("POST", "/usuarios"): {ADM},

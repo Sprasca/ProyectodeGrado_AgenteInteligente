@@ -81,3 +81,18 @@ class ContratoUsuarios:
         primero = repo_usuarios.crear(nombre(), "Admin 1", CLAVE, Rol.ADMIN)
         repo_usuarios.crear(nombre(), "Admin 2", CLAVE, Rol.ADMIN)
         assert repo_usuarios.actualizar(primero.id, activo=False).activo is False
+
+    def test_correo_opcional_se_normaliza_cambia_y_se_quita(self, repo_usuarios, nombre):
+        sin = repo_usuarios.crear(nombre(), "Sin correo", "clave-segura-1", Rol.AUXILIAR)
+        assert sin.email is None
+        con = repo_usuarios.crear(nombre(), "Con correo", "clave-segura-1", Rol.CONTADOR, " A@B.Co ")
+        assert con.email == "a@b.co" and repo_usuarios.obtener(con.id).email == "a@b.co"
+        assert repo_usuarios.actualizar(con.id, email="nuevo@b.co").email == "nuevo@b.co"
+        assert repo_usuarios.actualizar(con.id, activo=True).email == "nuevo@b.co"  # sin email no lo toca
+        assert repo_usuarios.actualizar(con.id, email="").email is None
+
+    @pytest.mark.parametrize("email", ["sin-arroba", "a@b", "a b@c.co"])
+    def test_correo_invalido(self, repo_usuarios, nombre, email):
+        with pytest.raises(UsuarioInvalidoError, match="no es una dirección válida"):
+            repo_usuarios.crear(nombre(), "Mal correo", "clave-segura-1", Rol.AUXILIAR, email)
+

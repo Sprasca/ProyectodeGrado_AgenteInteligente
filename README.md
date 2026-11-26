@@ -4,7 +4,7 @@ Proyecto de grado, Ingeniería de Sistemas, Universidad de Cartagena.
 
 El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la interpreta, propone el asiento contable bajo el PUC del Grupo 2 y deja en alerta lo que no clasifica con suficiente confianza.
 
-## Estado: Fase 4 (reporte diario y exportación, RF06 y RF07) En Pruebas
+## Estado: Fase 5 (notificaciones, RF04) En Pruebas
 
 | Componente | Estado |
 |---|---|
@@ -22,6 +22,7 @@ El agente recibe la factura electrónica de venta (XML UBL de la DIAN), la inter
 | API HTTP (FastAPI) | Listo, con pruebas |
 | NLP + RAG con pgvector | Sprint 2, NLP en proceso de prueba |
 | Reporte diario: horario de la jornada, reportes parciales y de cierre, cierre programado (RF06), exportación a XML validado con XSD (RF07), anulación | Listo, con pruebas unitarias y de integración |
+| Notificaciones (RF04): bandeja por usuario, contables y técnicas, atención automática o a mano, correo opcional con reintentos | Listo, con pruebas unitarias y de integración |
 
 > El catálogo de `data/puc/` es una **semilla** de cuentas de ingresos por ventas. Las facturas de `tests/fixtures/` son sintéticas, no documentos reales. La carpeta de facturas almacena documentos sintéticos y reales que se usan como ejemplo para las pruebas.
 
@@ -36,7 +37,7 @@ cp .env.example .env
 uv run python -c "import secrets; print(secrets.token_urlsafe(48))"
 uv sync
 docker compose up -d db
-uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0010)
+uv run alembic upgrade head                          # crea el esquema (migraciones 0001 a 0011)
 uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira reglas obsoletas
 ```
 
@@ -53,6 +54,8 @@ uv run python scripts/sembrar_puc.py --sincronizar   # carga la semilla y retira
 | `DIRECTORIO_RECIBIDOS`, `DIRECTORIO_NO_RECIBIDOS` | Adónde mueve la recepción automática los archivos procesados y los que fallan (por defecto, `recibidos/` y `no_recibidos/` dentro de `DIRECTORIO_ENTRADA`) |
 | `RECEPCION_REINTENTOS`, `RECEPCION_ESPERA_INICIAL` | Reintentos ante una causa temporal (3) y espera antes del primero, en segundos (1); la espera se duplica en cada reintento |
 | `RECEPCION_ESPERA_ESTABILIDAD` | Segundos que un archivo debe dejar de cambiar para considerar terminada su copia (1) |
+| `SMTP_HOST`, `SMTP_PUERTO`, `SMTP_USUARIO`, `SMTP_CONTRASENA`, `SMTP_REMITENTE`, `SMTP_SEGURIDAD` | Correo de las notificaciones, **opcional**. Solo se activa con `SMTP_HOST` y `SMTP_REMITENTE`; sin ellos, solo la bandeja y ningún error. `SMTP_SEGURIDAD`: `starttls` (por defecto), `ssl` o `ninguna` |
+| `CORREO_INTENTOS`, `CORREO_ESPERA_INICIAL` | Intentos por correo (3) y espera antes del segundo, en segundos (60); la espera se duplica en cada intento |
 | `TAMANO_MAXIMO_DOCUMENTO_MB` | Tamaño máximo de un documento de factura, en MB (10). En la API, uno mayor responde **413** |
 | `UMBRAL_CONFIANZA`, `GROQ_API_KEY`, `GROQ_MODELO` | Clasificación y sugerencias de Groq |
 
@@ -96,13 +99,13 @@ Por cada archivo `.xml` o `.pdf` nuevo en el primer nivel de la carpeta:
    - PDF que empiece con `%PDF-`, termine con `%%EOF` y se pueda abrir;
    - en ambos casos, que no esté vacío ni supere `TAMANO_MAXIMO_DOCUMENTO_MB`.
 3. **Lo procesa con el mismo flujo de la carga por la API**: clasificación híbrida y persistencia, con el documento original, sus eventos `RECIBIDA` (canal `carpeta`, **sin usuario**) y `CLASIFICADA`, y el rechazo de duplicados por número, CUFE o SHA-256.
-4. **Lo mueve** a `recibidos/` o, si falla, a `no_recibidos/` junto con `<archivo>.motivo.json` (fecha, motivo, tipo de error e intentos; en un duplicado, además, `id_transaccion_existente`: la transacción original). Cada fallo deja además un registro de nivel **ERROR** en el log (la "alerta técnica" del manual). Nunca sobrescribe: si el nombre ya existe, agrega la fecha y la hora.
+4. **Lo mueve** a `recibidos/` o, si falla, a `no_recibidos/` junto con `<archivo>.motivo.json` (fecha, motivo, tipo de error e intentos; en un duplicado, además, `id_transaccion_existente`: la transacción original). Cada fallo deja además un registro de nivel **ERROR** en el log y una **notificación** (ver *Notificaciones*): técnica para el ADMIN o, si es una factura duplicada, contable para el auxiliar. Nunca sobrescribe: si el nombre ya existe, agrega la fecha y la hora.
 
 **Reintentos:** solo ante una causa temporal, es decir, un archivo que aún se copia, está vacío o está bloqueado, o una base de datos que no responde. Se hacen `RECEPCION_REINTENTOS` intentos más, con espera creciente (1, 2, 4… s); agotados, el archivo va a `no_recibidos/`. Un documento inválido, duplicado o demasiado grande va directo a `no_recibidos/`.
 
 **SHA-256 ya registrado:** si en `recibidos/` ya hay un archivo con ese mismo SHA-256, la factura ya se recibió y esta es otra copia: es un duplicado y va a `no_recibidos/` con su `.motivo.json` y un **ERROR** (copiar dos veces el mismo archivo deja uno en cada carpeta). Si no lo hay y la transacción entró por el canal `carpeta` con el mismo nombre de archivo, es una factura que quedó registrada pero no se alcanzó a mover (p. ej. el proceso se detuvo entre el registro y el movimiento): va a `recibidos/` con un **WARNING** y sin crear otra transacción. Cualquier otro SHA-256 repetido (p. ej. registrado por la API) es un duplicado.
 
-**Interrupciones:** cada pocos segundos el vigilante comprueba que la carpeta exista y sea accesible. Si no lo es, deja un ERROR y reanuda cuando vuelve. Al arrancar o al reanudar procesa los archivos que llegaron mientras tanto, del más antiguo al más reciente.
+**Interrupciones:** cada pocos segundos el vigilante comprueba que la carpeta exista y sea accesible. Si no lo es, deja un ERROR y una notificación técnica para el ADMIN, que queda atendida sola cuando la carpeta vuelve; la recepción se reanuda. Al arrancar o al reanudar procesa los archivos que llegaron mientras tanto, del más antiguo al más reciente.
 
 Una factura recibida en **PDF siempre queda `EN_ALERTA`**, en los dos canales (API y carpeta): un PDF no puede validarse contra el anexo técnico de la DIAN, así que nunca se aprueba automáticamente.
 
@@ -143,7 +146,9 @@ Están definidos en un solo lugar: [src/agente/api/permisos.py](src/agente/api/p
 | Consultar reportes, la jornada y el horario, y descargar el XML exportado (todos los `GET /reportes...`) | ✓ | ✓ | |
 | Exportar (autorizar) y anular reportes | ✓ | | |
 | Cambiar el horario de la jornada (`PUT /reportes/horario`) | ✓ | | |
-| Usuarios: `GET`, `POST` y `PUT /usuarios` (crear, desactivar, cambiar rol) | | | ✓ |
+| Usuarios: `GET`, `POST` y `PUT /usuarios` (crear, desactivar, cambiar rol y correo) | | | ✓ |
+| Notificaciones: ver, contar y marcar como leídas **las propias** (`/notificaciones...`) | ✓ | ✓ | ✓ |
+| Atender a mano **las propias** que no se resuelven solas (`POST /notificaciones/{id}/atender`) | ✓ | ✓ | ✓ |
 
 ## API
 Documentación interactiva en http://127.0.0.1:8000/docs.
@@ -161,7 +166,7 @@ Documentación interactiva en http://127.0.0.1:8000/docs.
 | `POST /transacciones/{id}/aprobar` | Aprueba una transacción `EN_ALERTA` con asiento propuesto. Cuerpo opcional: `{"motivo": "..."}` |
 | `POST /transacciones/{id}/corregir` | Reemplaza las partidas: `{"partidas": [{"cuenta": "1105", "naturaleza": "DEBITO", "valor": 119000}, ...], "motivo": "..."}` |
 | `POST /transacciones/{id}/rechazar` | `EN_ALERTA` o `APROBADA_AUTOMATICA` → `RECHAZADA` (estado final): `{"motivo": "..."}` |
-| `GET /usuarios`, `POST /usuarios`, `PUT /usuarios/{id}` | Administración de usuarios (ADMIN). `PUT` acepta `rol`, `activo` y `nombre_completo` |
+| `GET /usuarios`, `POST /usuarios`, `PUT /usuarios/{id}` | Administración de usuarios (ADMIN). `POST` acepta `email` (opcional); `PUT` acepta `rol`, `activo`, `nombre_completo` y `email` (`""` lo quita) |
 
 Corregir y rechazar exigen un **motivo de al menos 10 caracteres** (si no, **422**). Una transacción `RECHAZADA` no admite más acciones (**409**). Una transacción con **reporte vigente** (`reporte_id`) no se puede corregir ni rechazar (**409**); si su reporte está `CONSOLIDADO`, se libera anulándolo.
 
@@ -210,9 +215,9 @@ Los eventos y el documento original no se borran en cascada con la transacción.
 
 **Estados.** `CONSOLIDADO` → `EXPORTADO` (final) o `CONSOLIDADO` → `ANULADO` (final). Cada cambio queda en `evento_reporte` con el usuario y la fecha y hora; el vínculo entre reporte y transacciones queda en `reporte_transaccion`, que no se borra. El XML se guarda en la base (`reporte_diario.archivo_xml`), y generarlo, validarlo y marcar el reporte como `EXPORTADO` (con los eventos) ocurre en **una sola transacción de base de datos**.
 
-**Cierre programado, sin reintentos.** `scripts/recibir_facturas.py` (el mismo proceso del vigilante) hace **un solo intento** de generar el reporte de cierre a la `HORA_CIERRE` guardada en la base, sin usuario y con corte a esa hora. Si el proceso no corría a esa hora, hace el mismo intento al arrancar, con el corte original. Si la jornada queda **sin reporte de cierre** (alertas sin resolver, descuadre u otro error), registra la alerta técnica `JORNADA_SIN_CIERRE` en la tabla `alerta_tecnica` ("la jornada no tiene reporte de cierre", con el número de alertas pendientes) y un **ERROR** en el log; no vuelve a intentar, ni al reiniciar el proceso. La alerta se registra siempre que la jornada haya recibido alguna transacción sin contar las `RECHAZADAS`, también si todas están en alerta (no hay aprobadas, pero sí trabajo pendiente para el contador); solo una jornada que no recibió ninguna queda sin cierre y sin alerta. El auxiliar o el contador generan después el cierre a mano. La Fase 5 convertirá esas filas en notificaciones (`notificada_en`). Con `--sin-cierre` no cierra, y `--una-vez` nunca cierra.
+**Cierre programado, sin reintentos.** `scripts/recibir_facturas.py` (el mismo proceso del vigilante) hace **un solo intento** de generar el reporte de cierre a la `HORA_CIERRE` guardada en la base, sin usuario y con corte a esa hora. Si el proceso no corría a esa hora, hace el mismo intento al arrancar, con el corte original. Si la jornada queda **sin reporte de cierre** (alertas sin resolver, descuadre u otro error), registra la notificación técnica `JORNADA_SIN_CIERRE` para el ADMIN ("la jornada no tiene reporte de cierre", con el número de alertas pendientes) y un **ERROR** en el log; no vuelve a intentar, ni al reiniciar el proceso. La alerta se registra siempre que la jornada haya recibido alguna transacción sin contar las `RECHAZADAS`, también si todas están en alerta (no hay aprobadas, pero sí trabajo pendiente para el contador); solo una jornada que no recibió ninguna queda sin cierre y sin alerta. El auxiliar o el contador generan después el cierre a mano, y la notificación queda atendida sola. Con `--sin-cierre` no cierra, y `--una-vez` nunca cierra.
 
-**Avisos.** Hasta que exista el módulo de notificaciones (Fase 5), lo demás que el manual pide notificar queda en el log `agente.reportes`: **WARNING** con el número de alertas pendientes, **ERROR** ("ALERTA TÉCNICA") ante un descuadre o una exportación fallida, **INFO** cuando no hay nada que consolidar.
+**Avisos.** Lo que el manual pide notificar es una notificación (ver *Notificaciones*): el reporte disponible, el bloqueo por alertas, el descuadre y la exportación fallida. Además queda en el log `agente.reportes`: **WARNING** con el número de alertas pendientes, **ERROR** ("ALERTA TÉCNICA") ante un descuadre o una exportación fallida, **INFO** cuando no hay nada que consolidar.
 
 #### Ampliaciones respecto al manual
 - **Reportes parciales.** El manual habla de un consolidado al cierre del día; los parciales (hasta 4 por jornada) permiten adelantar la exportación durante el día.
@@ -231,6 +236,42 @@ Los eventos y el documento original no se borran en cascada con la transacción.
 - **Jornadas en desorden.** Cada jornada se cierra y se exporta por separado. Si una jornada anterior está bloqueada por alertas, las siguientes pueden cerrarse y exportarse antes que ella, y el ERP recibiría los reportes fuera de orden. Confirmar si el ERP lo admite o si una jornada debe esperar a que la anterior tenga cierre.
 - **Reintento del cierre.** El cierre programado no reintenta: si no pudo cerrar, el auxiliar o el contador cierran a mano. Confirmar que no necesita un segundo intento automático.
 - **Qué es RN07.** El manual la cita en RF06 pero no la define.
+
+### Notificaciones (RF04)
+| Método y ruta | Descripción |
+|---|---|
+| `GET /notificaciones?no_leidas=true&no_atendidas=true` | Las del usuario autenticado, de la más reciente a la más antigua, con filtros opcionales |
+| `GET /notificaciones/no-leidas/total` | `{"no_leidas": n}` |
+| `POST /notificaciones/{id}/leer` | Marca leída su copia. De otro usuario o inexistente → **404** |
+| `POST /notificaciones/leer-todas` | `{"marcadas": n}` |
+| `POST /notificaciones/{id}/atender` | Atención a mano, solo de las que no se resuelven solas. Las que se resuelven solas → **409** (se atienden resolviendo su causa); una copia informativa → **409**; ya atendida → **409**; de otro usuario → **404** |
+
+**Qué se notifica, a quién y cómo se atiende.**
+
+| Tipo | Clase | Para | Origen en el manual | Se atiende |
+|---|---|---|---|---|
+| `TRANSACCION_EN_ALERTA` | Contable | Contador (para resolver) y auxiliar (informativa) | RF04 (p. 25), RN05 (p. 7) | Sola, al aprobar, corregir o rechazar la transacción |
+| `CONSOLIDACION_BLOQUEADA` | Contable | Contador | RF06 1.a (p. 27) | Sola, al no quedar alertas en la jornada o al consolidar un reporte de ella |
+| `REPORTE_DISPONIBLE` | Contable | Contador y auxiliar | RF06 paso 8 (p. 27) | Sola, al exportar o anular el reporte |
+| `FACTURA_DUPLICADA` | Contable | Auxiliar | Decisión: un documento enviado dos veces | A mano |
+| `DESCUADRE` | Técnica | ADMIN | RF06 3.a (p. 27) | A mano |
+| `EXPORTACION_FALLIDA` | Técnica | ADMIN | RF07 anomalía 4 (p. 28) | Sola, al exportar o anular el reporte |
+| `JORNADA_SIN_CIERRE` | Técnica | ADMIN | Cierre programado (Fase 4) | Sola, al generarse el cierre |
+| `ARCHIVO_NO_RECIBIDO` | Técnica | ADMIN | RF01 1.a y 2.a (p. 23) | A mano |
+| `DIRECTORIO_NO_DISPONIBLE` | Técnica | ADMIN | RF01 3.a (p. 23) | Sola, cuando el directorio vuelve |
+| `ERROR_RECEPCION` | Técnica | ADMIN | Error inesperado al recibir un archivo | A mano |
+| `CORREO_NO_ENVIADO` | Técnica | ADMIN | RF04 anomalía 2 (p. 25) | A mano |
+
+- **Transacción en alerta para dos roles.** RF04 (p. 25) pide notificar "al contador con el número de la factura, la descripción de la venta y el motivo de la alerta", y RN05 (p. 7) dice que el agente "alerta al auxiliar contable". Se cumplen los dos: para el contador es una notificación para resolver; para el auxiliar es **informativa** (`informativa: true`), la ve pero no puede atenderla ni resolver la transacción (RN06: solo el contador la resuelve).
+- **Bandeja por usuario.** Cada causa es una notificación; cada usuario activo del rol destinatario tiene su copia, con su propio estado de leída o no leída. "Atendida" es de la causa: la ven atendida todos sus destinatarios. Cada usuario solo ve las suyas.
+- **Una sola por causa.** Mientras una causa esté abierta no se crea otra igual: se actualiza la existente (por ejemplo, el número de pendientes de un bloqueo) y vuelve a quedar sin leer. Lo impone la base con el índice único parcial `uq_notificacion_causa_abierta` (tipo y clave, entre las no atendidas); una copia por usuario, con la llave primaria de `notificacion_usuario`.
+- **Nunca se pierde.** La notificación se guarda en la **misma transacción de base de datos** que el hecho que la causa (la transacción en alerta, el reporte) o que la resuelve (la aprobación, la exportación). Las causas que son fallas (bloqueo, descuadre, exportación fallida, archivo no recibido) se guardan en su propia transacción, porque la de negocio se revierte. Si la base no responde, no se puede guardar: queda el **ERROR** en el log.
+- **Destinatarios.** Los usuarios activos del rol al crearse la notificación. Si no hay ninguno, la causa se guarda igual y queda un WARNING.
+- **Correo, opcional.** Solo con `SMTP_HOST` y `SMTP_REMITENTE`, y para los usuarios con `email`. Cada envío se registra en `envio_correo` (PENDIENTE, ENVIADA o FALLIDA, intentos y último error) y lo envía `scripts/recibir_facturas.py` en su revisión periódica: hasta `CORREO_INTENTOS` (3) con espera creciente. Si fallan todos queda FALLIDA, la notificación **sigue en la bandeja** (con `correo: "FALLIDA"`) y el ADMIN recibe `CORREO_NO_ENVIADO` (solo en la bandeja, sin correo). Si solo corre la API y no `recibir_facturas.py`, los correos quedan pendientes. Las pruebas usan un servidor SMTP falso (aiosmtpd): nunca envían correos reales.
+- **`alerta_tecnica` (Fase 4).** La migración 0011 pasó sus filas a notificaciones `JORNADA_SIN_CIERRE` para los ADMIN activos y eliminó la tabla.
+
+#### Decisión pendiente con el contador
+- **Responsable de mantenimiento.** El manual pide las alertas técnicas para el "responsable de mantenimiento" (RF06 3.a) pero no lo define. Hoy es el rol **ADMIN**. Confirmarlo.
 
 ### Catálogo y reglas (RF09)
 El contador administra cuentas y reglas sin tocar código. Cada creación, edición, activación o desactivación de una regla queda en `historial_regla` (acción, antes, después, usuario y fecha).

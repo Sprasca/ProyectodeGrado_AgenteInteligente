@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 from fabricas import cufe_unico, xml_factura
-from limpieza_bd import borrar_transacciones
-from sqlalchemy import select
+from limpieza_bd import borrar_notificaciones, borrar_transacciones
+from sqlalchemy import func, select
 
 from agente.application.clasificar_con_nlp import invalidar_catalogo
 from agente.application.recepcion import (
@@ -26,7 +26,13 @@ from agente.application.recepcion import (
     receptor_por_defecto,
 )
 from agente.config import get_settings
-from agente.infrastructure.db.models import DocumentoModel, EventoTransaccionModel, TransaccionModel
+from agente.domain.enums import TipoNotificacion
+from agente.infrastructure.db.models import (
+    DocumentoModel,
+    EventoTransaccionModel,
+    NotificacionModel,
+    TransaccionModel,
+)
 from agente.infrastructure.recepcion.vigilante import VigilanteEntrada
 
 pytestmark = pytest.mark.integracion
@@ -34,8 +40,30 @@ pytestmark = pytest.mark.integracion
 PREFIJO = "ITEST-RECEP-"
 
 
+# Las notificaciones de la recepción no tienen transacción: se borran las creadas durante la prueba.
+_DE_LA_RECEPCION = [
+    t.value
+    for t in (
+        TipoNotificacion.ARCHIVO_NO_RECIBIDO,
+        TipoNotificacion.FACTURA_DUPLICADA,
+        TipoNotificacion.ERROR_RECEPCION,
+        TipoNotificacion.DIRECTORIO_NO_DISPONIBLE,
+    )
+]
+
+
 @pytest.fixture
-def entrada(tmp_path, monkeypatch, fabrica_bd):
+def notificacion_previa(fabrica_bd):
+    """La última notificación antes de la prueba; al terminar, borra las de la recepción posteriores."""
+    with fabrica_bd() as sesion:
+        ultima = sesion.scalar(select(func.coalesce(func.max(NotificacionModel.id), 0)))
+    yield ultima
+    with fabrica_bd() as sesion, sesion.begin():
+        borrar_notificaciones(sesion, (NotificacionModel.id > ultima) & NotificacionModel.tipo.in_(_DE_LA_RECEPCION))
+
+
+@pytest.fixture
+def entrada(tmp_path, monkeypatch, fabrica_bd, notificacion_previa):
     """Carpeta de entrada temporal, catálogo desde la base, y limpieza de las transacciones creadas."""
     raiz = tmp_path / "entrada"
     raiz.mkdir()
@@ -119,7 +147,7 @@ def test_un_xml_dejado_en_la_carpeta_queda_registrado_y_en_recibidos(vigilante_e
     assert eventos[0].despues["documento"]["nombre_archivo"] == "factura-sistema-externo.xml"
 
 
-def test_xml_invalido_y_duplicado_van_a_no_recibidos(vigilante_en_marcha, fabrica_bd):
+def test_xml_invalido_y_duplicado_van_a_no_recibidos(vigilante_en_marcha, fabrica_bd, notificacion_previa):
     entrada = vigilante_en_marcha
     numero = _numero()
     contenido = xml_factura(numero)
@@ -141,7 +169,13 @@ def test_xml_invalido_y_duplicado_van_a_no_recibidos(vigilante_en_marcha, fabric
 
     with fabrica_bd() as sesion:
         cuantas = sesion.scalars(select(TransaccionModel.id).where(TransaccionModel.numero_factura == numero)).all()
+        nuevas = select(NotificacionModel.clave, NotificacionModel.tipo)
+        nuevas = nuevas.where(NotificacionModel.id > notificacion_previa)
+        notificaciones = dict(sesion.execute(nuevas).all())
     assert len(cuantas) == 1
+    # Notificaciones (RF01): la copia es contable, para el auxiliar; el XML inválido, técnica para el ADMIN.
+    assert notificaciones["archivo:copia.xml"] == "FACTURA_DUPLICADA"
+    assert notificaciones["archivo:no-es-factura.xml"] == "ARCHIVO_NO_RECIBIDO"
 
 
 def test_script_una_vez_procesa_lo_que_ya_estaba_en_la_carpeta(entrada, fabrica_bd):

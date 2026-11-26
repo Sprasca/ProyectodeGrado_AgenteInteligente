@@ -12,12 +12,20 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from ...domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoReporte
+from ...domain.enums import EstadoReporte, EstadoTransaccion, TipoEvento, TipoNotificacion, TipoReporte
 from ...domain.errors import (
     ExportacionFallidaError,
     JornadaCerradaError,
     LimiteDeReportesError,
     ReporteNoEncontradoError,
+)
+from ...domain.notificaciones import (
+    causa_reporte_disponible,
+    clave_jornada,
+    clave_reporte,
+    resolucion_cierre,
+    resolucion_reporte,
+    resolucion_reporte_consolidado,
 )
 from ...domain.reportes import (
     CUPO_CIERRE,
@@ -41,6 +49,7 @@ from ...domain.reportes import (
 )
 from ...domain.transacciones import exigir_motivo
 from .models import EventoReporteModel, ReporteDiarioModel, ReporteTransaccionModel, TransaccionModel
+from .notificaciones import atender_en_sesion, notificar_en_sesion
 from .transacciones import TransaccionRegistrada, a_registro, nuevo_evento, transaccion_bd
 
 # generar(reporte, transacciones, id del autor, fecha de autorización) -> contenido del archivo
@@ -206,6 +215,16 @@ def _evento_reporte(
     )
 
 
+def _atender_reporte(sesion: Session, id_reporte: uuid.UUID, estado: EstadoReporte, usuario_id: int | None) -> None:
+    """Exportado o anulado: ya no está pendiente de verificación ni de reintentar su exportación."""
+    atender_en_sesion(
+        sesion,
+        (TipoNotificacion.REPORTE_DISPONIBLE, TipoNotificacion.EXPORTACION_FALLIDA),
+        clave_reporte(id_reporte),
+        resolucion_reporte(estado.value, usuario_id),
+    )
+
+
 class RepositorioReportesSQL:
     def __init__(self, fabrica_sesiones: sessionmaker[Session]) -> None:
         self._fabrica = fabrica_sesiones
@@ -320,6 +339,21 @@ class RepositorioReportesSQL:
                         reporte.id, EstadoReporte.CONSOLIDADO, usuario_id, despues=datos_consolidado(consolidado)
                     )
                 )
+                # RF06 paso 8 (misma transacción); el bloqueo de la jornada queda resuelto.
+                notificar_en_sesion(sesion, causa_reporte_disponible(_a_reporte(reporte, [])))
+                atender_en_sesion(
+                    sesion,
+                    TipoNotificacion.CONSOLIDACION_BLOQUEADA,
+                    clave_jornada(fecha_jornada),
+                    resolucion_reporte_consolidado(reporte.id),
+                )
+                if tipo is TipoReporte.CIERRE:
+                    atender_en_sesion(
+                        sesion,
+                        TipoNotificacion.JORNADA_SIN_CIERRE,
+                        clave_jornada(fecha_jornada),
+                        resolucion_cierre(reporte.id),
+                    )
                 sesion.flush()
                 return _a_reporte(reporte, [t.id for t in filas])
         except IntegrityError as exc:
@@ -388,6 +422,7 @@ class RepositorioReportesSQL:
             vinculo = datos_vinculo(fila.id, fila.fecha_jornada, TipoReporte(fila.tipo), fila.numero)
             for t in incluidas:
                 sesion.add(nuevo_evento(t.id, TipoEvento.EXPORTADA, usuario_id, despues=vinculo | exportado))
+            _atender_reporte(sesion, fila.id, EstadoReporte.EXPORTADO, usuario_id)
             sesion.flush()
             return _a_reporte(fila, reporte.transacciones)
 
@@ -418,5 +453,6 @@ class RepositorioReportesSQL:
                 sesion.add(nuevo_evento(t.id, TipoEvento.LIBERADA, usuario_id, motivo=motivo, despues=liberada))
             fila.estado = EstadoReporte.ANULADO.value
             sesion.add(_evento_reporte(fila.id, EstadoReporte.ANULADO, usuario_id, motivo=motivo))
+            _atender_reporte(sesion, fila.id, EstadoReporte.ANULADO, usuario_id)
             sesion.flush()
             return _a_reporte(fila, self._transacciones_de(sesion, fila.id))

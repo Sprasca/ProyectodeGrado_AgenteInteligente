@@ -1,6 +1,6 @@
 """Cierre diario programado (RF06): un solo intento a la HORA_CIERRE de Colombia, sin usuario y sin reintentos.
 
-Si la jornada queda sin reporte de cierre, se registra la alerta técnica JORNADA_SIN_CIERRE.
+Si la jornada queda sin reporte de cierre, se registra la notificación técnica JORNADA_SIN_CIERRE para el ADMIN.
 """
 
 import importlib.util
@@ -10,14 +10,16 @@ from pathlib import Path
 
 import pytest
 from fabricas import resultado_alerta_con_asiento, resultado_aprobado
-from repositorio_jornada_memoria import RepositorioAlertasMemoria, RepositorioHorarioMemoria
+from repositorio_jornada_memoria import RepositorioHorarioMemoria
 from repositorio_memoria import RepositorioMemoria
+from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 from repositorio_reportes_memoria import RepositorioReportesMemoria
 
 from agente.application.cierre import CierreProgramado
-from agente.domain.enums import TipoAlertaTecnica, TipoReporte
+from agente.domain.enums import Rol, TipoNotificacion, TipoReporte
 from agente.domain.errors import ConsolidacionInconsistenteError
 from agente.domain.jornada import Horario
+from agente.domain.usuarios import Usuario
 from agente.infrastructure.db.transacciones import RepositorioNoDisponibleError
 from agente.infrastructure.recepcion.vigilante import VigilanteEntrada
 
@@ -35,15 +37,31 @@ class Reloj:
         return self.instante
 
 
+ADMIN = Usuario(3, "admin", "Admin", Rol.ADMIN)
+
+
+class Alertas:
+    """Las notificaciones JORNADA_SIN_CIERRE que ve el ADMIN."""
+
+    def __init__(self, notificaciones):
+        self.notificaciones = notificaciones
+
+    def listar(self):
+        return [v for v in self.notificaciones.listar(ADMIN.id) if v.tipo is TipoNotificacion.JORNADA_SIN_CIERRE]
+
+
 class Entorno:
     def __init__(self, catalogo, instante):
         self.reloj = Reloj(instante)
         self.horario = RepositorioHorarioMemoria()
-        self.transacciones = RepositorioMemoria(catalogo, horario=self.horario, reloj=self.reloj)
+        self.notificaciones = RepositorioNotificacionesMemoria(lambda: [ADMIN])
+        self.transacciones = RepositorioMemoria(
+            catalogo, horario=self.horario, reloj=self.reloj, notificaciones=self.notificaciones
+        )
         self.reportes = RepositorioReportesMemoria(self.transacciones)
-        self.alertas = RepositorioAlertasMemoria()
+        self.alertas = Alertas(self.notificaciones)
         self.catalogo = catalogo
-        self.cierre = CierreProgramado(self.reportes, self.horario, self.alertas, ahora=self.reloj)
+        self.cierre = CierreProgramado(self.reportes, self.horario, self.notificaciones, ahora=self.reloj)
 
     def recibir(self, numero, alerta=False):
         fabrica = resultado_alerta_con_asiento if alerta else resultado_aprobado
@@ -121,7 +139,7 @@ def test_con_alertas_no_cierra_no_reintenta_y_registra_la_alerta_tecnica(entorno
         assert entorno.cierre.revisar() is True
     assert entorno.cierres() == []
     (alerta,) = entorno.alertas.listar()
-    assert (alerta.tipo, alerta.fecha_jornada) == (TipoAlertaTecnica.JORNADA_SIN_CIERRE, HOY)
+    assert (alerta.tipo, alerta.fecha_jornada) == (TipoNotificacion.JORNADA_SIN_CIERRE, HOY)
     assert "la jornada no tiene reporte de cierre" in alerta.mensaje
     assert alerta.datos["alertas_pendientes"] == 2
     errores = [r for r in caplog.records if r.levelno == logging.ERROR]
@@ -145,7 +163,7 @@ def test_si_todas_las_transacciones_estan_en_alerta_registra_la_alerta_con_las_p
     assert entorno.cierre.revisar() is True
     assert entorno.cierres() == []
     (alerta,) = entorno.alertas.listar()
-    assert (alerta.tipo, alerta.fecha_jornada) == (TipoAlertaTecnica.JORNADA_SIN_CIERRE, HOY)
+    assert (alerta.tipo, alerta.fecha_jornada) == (TipoNotificacion.JORNADA_SIN_CIERRE, HOY)
     assert alerta.datos["alertas_pendientes"] == 3
     assert "Transacciones en alerta pendientes: 3" in alerta.mensaje
 
@@ -159,6 +177,20 @@ def test_si_todas_las_transacciones_fueron_rechazadas_no_hay_alerta(entorno):
     assert entorno.reportes.listar() == [] and entorno.alertas.listar() == []
 
 
+def test_el_cierre_hecho_a_mano_deja_atendida_la_notificacion(entorno):
+    entorno.recibir("FV-1")
+    entorno.recibir("FV-A", alerta=True)
+    entorno.reloj.instante = CORTE_24
+    entorno.cierre.revisar()
+    for t in entorno.transacciones.listar():
+        if t.motivos_alerta:
+            entorno.transacciones.aprobar(t.id, usuario_id=1)
+    cierre = entorno.reportes.consolidar(fecha_jornada=HOY, tipo=TipoReporte.CIERRE, corte=CORTE_24, usuario_id=1)
+    (notificacion,) = entorno.alertas.listar()
+    assert notificacion.atendida_en is not None and notificacion.atendida_por is None
+    assert notificacion.resolucion == f"Se generó el reporte de cierre {cierre.id}."
+
+
 def test_al_reiniciar_no_repite_el_intento_que_ya_fallo(entorno):
     entorno.recibir("FV-1")
     entorno.recibir("FV-A", alerta=True)
@@ -167,7 +199,7 @@ def test_al_reiniciar_no_repite_el_intento_que_ya_fallo(entorno):
     for t in entorno.transacciones.listar():
         if t.motivos_alerta:
             entorno.transacciones.aprobar(t.id, usuario_id=1)
-    reiniciado = CierreProgramado(entorno.reportes, entorno.horario, entorno.alertas, ahora=entorno.reloj)
+    reiniciado = CierreProgramado(entorno.reportes, entorno.horario, entorno.notificaciones, ahora=entorno.reloj)
     assert reiniciado.revisar() is True  # revisa, pero la alerta registrada indica que ya se intentó
     assert entorno.cierres() == []
     assert len(entorno.alertas.listar()) == 1

@@ -7,12 +7,20 @@ from datetime import UTC, datetime
 from itertools import count
 
 from repositorio_jornada_memoria import RepositorioHorarioMemoria
+from repositorio_notificaciones_memoria import RepositorioNotificacionesMemoria
 
 from agente.domain.asiento import Partida
 from agente.domain.documento import DocumentoOriginal, DocumentoRegistrado
-from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento
+from agente.domain.enums import CanalRecepcion, EstadoTransaccion, TipoEvento, TipoNotificacion
 from agente.domain.errors import TransaccionNoEncontradaError
 from agente.domain.jornada import jornada_de
+from agente.domain.notificaciones import (
+    causa_transaccion_en_alerta,
+    clave_jornada,
+    clave_transaccion,
+    resolucion_jornada_sin_alertas,
+    resolucion_transaccion,
+)
 from agente.domain.puc import CatalogoPUC
 from agente.domain.reportes import exigir_sin_reporte
 from agente.domain.resultado import ResultadoClasificacion
@@ -44,6 +52,7 @@ class RepositorioMemoria:
         cuentas_en_bd: set[str] | None = None,
         horario: RepositorioHorarioMemoria | None = None,
         reloj: Callable[[], datetime] | None = None,
+        notificaciones: RepositorioNotificacionesMemoria | None = None,
     ) -> None:
         """
         cuentas_en_bd simula la tabla cuenta_puc (llave foránea); por defecto, las del catálogo.
@@ -51,6 +60,8 @@ class RepositorioMemoria:
         recepción de cada factura (por defecto, ahora), para probar a qué jornada pertenece.
         """
         self.horario = horario if horario is not None else RepositorioHorarioMemoria()
+        # Las notificaciones (comparten la base en SQL). None: las pruebas que no las usan no las crean.
+        self.notificaciones = notificaciones
         self.reloj = reloj or (lambda: datetime.now(UTC))
         self._catalogo = catalogo
         self._cuentas_en_bd = cuentas_en_bd if cuentas_en_bd is not None else {c.codigo for c in catalogo.cuentas}
@@ -115,6 +126,8 @@ class RepositorioMemoria:
         recepcion = datos_recepcion(resultado, documento, canal)
         self._registrar(registro.id, TipoEvento.RECIBIDA, usuario_id, despues=recepcion)
         self._registrar(registro.id, TipoEvento.CLASIFICADA, None, despues=datos_clasificacion(resultado))
+        if self.notificaciones is not None and registro.estado is EstadoTransaccion.EN_ALERTA:
+            self.notificaciones.notificar(causa_transaccion_en_alerta(registro))
         return registro.id
 
     def obtener(self, id_transaccion: uuid.UUID) -> TransaccionRegistrada | None:
@@ -128,6 +141,21 @@ class RepositorioMemoria:
         if t is None:
             raise TransaccionNoEncontradaError(f"No existe la transacción {id_transaccion}.")
         return t
+
+    def _resolver_alerta(self, id_transaccion, accion, usuario_id) -> None:
+        if self.notificaciones is None:
+            return
+        self.notificaciones.atender_causa(
+            TipoNotificacion.TRANSACCION_EN_ALERTA,
+            clave_transaccion(id_transaccion),
+            resolucion_transaccion(accion, usuario_id),
+        )
+        jornada = self._por_id[id_transaccion].fecha_jornada
+        alertas = [t for t in self._por_id.values() if t.estado is EstadoTransaccion.EN_ALERTA]
+        if not any(t.fecha_jornada == jornada for t in alertas):
+            self.notificaciones.atender_causa(
+                TipoNotificacion.CONSOLIDACION_BLOQUEADA, clave_jornada(jornada), resolucion_jornada_sin_alertas()
+            )
 
     def aprobar(
         self, id_transaccion: uuid.UUID, *, usuario_id: int | None = None, motivo: str | None = None
@@ -144,6 +172,7 @@ class RepositorioMemoria:
             antes={"estado": t.estado.value},
             despues={"estado": EstadoTransaccion.APROBADA_CONTADOR.value},
         )
+        self._resolver_alerta(t.id, "aprobó", usuario_id)
         return self._por_id[t.id]
 
     def corregir(
@@ -174,6 +203,7 @@ class RepositorioMemoria:
             antes=estado_y_partidas(t.estado, t.partidas),
             despues=estado_y_partidas(EstadoTransaccion.CORREGIDA_CONTADOR, asiento.partidas),
         )
+        self._resolver_alerta(t.id, "corrigió", usuario_id)
         return self._por_id[t.id]
 
     def rechazar(
@@ -192,6 +222,7 @@ class RepositorioMemoria:
             antes={"estado": t.estado.value},
             despues={"estado": EstadoTransaccion.RECHAZADA.value},
         )
+        self._resolver_alerta(t.id, "rechazó", usuario_id)
         return self._por_id[t.id]
 
     def eventos(self, id_transaccion: uuid.UUID) -> list[EventoTransaccion]:

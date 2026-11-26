@@ -17,6 +17,7 @@ import os
 import queue
 import threading
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,14 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ...application.recepcion import ReceptorFacturas
+from ...domain.enums import TipoNotificacion
+from ...domain.notificaciones import (
+    Causa,
+    causa_directorio_no_disponible,
+    causa_error_recepcion,
+    clave_directorio,
+)
+from ..db.notificaciones import RepositorioNotificaciones
 
 log = logging.getLogger("agente.recepcion")
 
@@ -55,11 +64,14 @@ class VigilanteEntrada:
         intervalo: float = 5.0,
         crear_observador: Callable[[], Any] = Observer,
         tareas: Sequence[Callable[[], object]] = (),
+        notificaciones: RepositorioNotificaciones | None = None,
     ) -> None:
         """tareas: se ejecutan en cada revisión del supervisor (p. ej. el cierre diario programado, RF06)."""
         self.receptor = receptor
         self.intervalo = intervalo
         self._tareas = tuple(tareas)
+        # RepositorioNotificaciones (opcional): directorio no disponible y errores inesperados (RF01).
+        self._notificaciones = notificaciones
         self._crear_observador = crear_observador
         self._observador: Any | None = None
         self._disponible: bool | None = None  # None: todavía no se ha revisado
@@ -111,8 +123,10 @@ class VigilanteEntrada:
                 if recepcion.destino is None and ruta.exists():
                     with self._candado:
                         self._sin_mover[ruta] = ruta.stat().st_mtime_ns
-            except Exception:  # el trabajador nunca debe morir por un archivo
+            except Exception as exc:  # el trabajador nunca debe morir por un archivo
                 log.exception("Error inesperado al recibir %s.", ruta.name)
+                fecha = datetime.now(UTC).isoformat(timespec="seconds")
+                self._notificar(causa_error_recepcion(ruta.name, str(exc) or type(exc).__name__, fecha))
             finally:
                 with self._candado:
                     self._en_cola.discard(ruta)
@@ -125,6 +139,7 @@ class VigilanteEntrada:
             if not self._disponible:
                 if self._disponible is False:
                     log.info("El directorio de entrada %s volvió a estar disponible.", self.entrada)
+                    self._atender_directorio()
                 self._iniciar_observador()
                 log.info("Observando el directorio de entrada %s.", self.entrada)
             self._disponible = True
@@ -138,8 +153,29 @@ class VigilanteEntrada:
                     "Se reanudará la observación cuando vuelva.",
                     self.entrada,
                 )
+                self._notificar(causa_directorio_no_disponible(self.entrada))
                 self._detener_observador()
             self._disponible = False
+
+    def _notificar(self, causa: Causa) -> None:
+        if self._notificaciones is None:
+            return
+        try:
+            self._notificaciones.registrar(causa)
+        except Exception as exc:
+            log.error("No se pudo registrar la notificación %s: %s", causa.tipo, exc)
+
+    def _atender_directorio(self) -> None:
+        if self._notificaciones is None:
+            return
+        try:
+            self._notificaciones.atender_causa(
+                TipoNotificacion.DIRECTORIO_NO_DISPONIBLE,
+                clave_directorio(self.entrada),
+                "El directorio de entrada volvió a estar disponible.",
+            )
+        except Exception as exc:
+            log.error("No se pudo marcar atendida la notificación del directorio: %s", exc)
 
     def _directorio_accesible(self) -> bool:
         try:

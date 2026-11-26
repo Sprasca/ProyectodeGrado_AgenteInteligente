@@ -14,6 +14,8 @@ LONGITUD_MAXIMA_NOMBRE_USUARIO = 60
 LONGITUD_MAXIMA_NOMBRE_COMPLETO = 200
 LONGITUD_MINIMA_CONTRASENA = 8
 _RE_NOMBRE_USUARIO = re.compile(r"[a-z0-9][a-z0-9._-]{2,59}")
+LONGITUD_MAXIMA_EMAIL = 254  # usuario.email (String(254))
+_RE_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,25 @@ class Usuario:
     rol: Rol
     activo: bool = True
     creado_en: datetime | None = None
+    # Opcional: solo para el correo de las notificaciones (si hay SMTP configurado).
+    email: str | None = None
+
+
+def normalizar_email(email: str | None) -> str | None:
+    """Vacío → None (sin correo)."""
+    if email is None:
+        return None
+    email = email.strip().lower()
+    return email or None
+
+
+def validar_email(email: str | None) -> tuple[str, ...]:
+    email = normalizar_email(email)
+    if email is None:
+        return ()
+    if len(email) > LONGITUD_MAXIMA_EMAIL or not _RE_EMAIL.fullmatch(email):
+        return (f"El correo {email!r} no es una dirección válida.",)
+    return ()
 
 
 def normalizar_nombre_usuario(nombre_usuario: str) -> str:
